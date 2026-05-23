@@ -6,11 +6,14 @@
 #include <dlfcn.h>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 #include <cinttypes>
+#include <cstdio>
 #include <string>
 #include <vector>
 #include <sstream>
 #include <fstream>
+#include <algorithm>
 #include <unistd.h>
 #include "xdl.h"
 #include "log.h"
@@ -24,6 +27,25 @@
 #undef DO_API
 
 static uint64_t il2cpp_base = 0;
+
+// ------------------------------------------------------------------
+// global-metadata.dat header (aka Il2CppGlobalMetadataHeader)
+// We only define sanity & version for validation.
+// Fields after version vary by Unity version (19~29+), so we do NOT
+// rely on a static C struct to calculate the metadata size.
+// Instead, we derive size from the memory-mapping region boundary.
+// ------------------------------------------------------------------
+#pragma pack(push, 1)
+struct Il2CppGlobalMetadataHeader {
+    int32_t sanity;
+    int32_t version;
+};
+#pragma pack(pop)
+
+static const int32_t kMetadataSanity = 0xFAB11BAF;
+static const int32_t kMetadataMinVersion = 16;
+static const int32_t kMetadataMaxVersion = 32;
+static const size_t  kMaxMetadataSize = 256 * 1024 * 1024; // safety cap: 256 MB
 
 void init_il2cpp_api(void *handle) {
 #define DO_API(r, n, p) {                      \
@@ -426,4 +448,177 @@ void il2cpp_dump(const char *outDir) {
     }
     outStream.close();
     LOGI("dump done!");
+
+    // Dump the (already decrypted) global-metadata.dat from memory
+    il2cpp_dump_global_metadata(outDir);
+}
+
+// ------------------------------------------------------------
+// Locate global-metadata.dat using the il2cpp API.
+//
+// The metadata contains all type/method/field definitions and
+// string tables.  At runtime, il2cpp API functions like
+// il2cpp_image_get_name() return pointers that live inside the
+// metadata blob.  We use one such pointer as a "breadcrumb" to
+// find the containing memory region, then dump the whole region.
+//
+// After dumping, we validate the file header (magic + version)
+// so we get immediate feedback in logcat whether the output is
+// usable by Il2CppDumper.
+// ------------------------------------------------------------
+
+static bool validate_metadata_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        LOGE("validate: cannot open %s (errno=%d)", path, errno);
+        return false;
+    }
+
+    // Read first 8 bytes: magic (uint32 LE) + version (int32 LE)
+    uint8_t hdr[8];
+    if (fread(hdr, 1, 8, f) != 8) {
+        LOGE("validate: file too small (less than 8 bytes)");
+        fclose(f);
+        return false;
+    }
+
+    uint32_t magic = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
+                     ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+    int32_t version = (int32_t)hdr[4] | ((int32_t)hdr[5] << 8) |
+                      ((int32_t)hdr[6] << 16) | ((int32_t)hdr[7] << 24);
+
+    LOGI("  validation: magic=0x%08X version=%d", magic, version);
+
+    bool magic_ok = (magic == 0xFAB11BAF);
+    bool version_ok = (version >= kMetadataMinVersion && version <= kMetadataMaxVersion);
+
+    if (!magic_ok) {
+        LOGE("  validation FAILED: magic mismatch (got 0x%08X, expected 0xFAB11BAF)", magic);
+    }
+    if (!version_ok) {
+        LOGE("  validation FAILED: version %d out of range [%d, %d]",
+             version, kMetadataMinVersion, kMetadataMaxVersion);
+    }
+
+    // Also read header end markers to see how far valid metadata extends
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fclose(f);
+
+    if (magic_ok && version_ok) {
+        LOGI("  validation PASSED: magic OK, version=%d, size=%ld bytes (%.2f MB)",
+             version, file_size, file_size / (1024.0 * 1024.0));
+        LOGI("  file is usable by Il2CppDumper.");
+    } else {
+        LOGW("  validation WARNING: header may not be parseable by Il2CppDumper");
+        LOGI("  file size: %ld bytes", file_size);
+    }
+
+    return magic_ok && version_ok;
+}
+
+void il2cpp_dump_global_metadata(const char *outDir) {
+    LOGI("ok dump global-metadata.dat: starting...");
+
+    if (il2cpp_base == 0) {
+        LOGE("il2cpp_base is 0, il2cpp API not initialized");
+        return;
+    }
+    LOGI("il2cpp_base: 0x%" PRIx64, il2cpp_base);
+
+    // --- 1. Get a string pointer that lives inside the metadata ---
+    //     Any image name returned by il2cpp_image_get_name() is
+    //     stored directly in the metadata string table, so we can
+    //     use it to locate the metadata blob.
+    size_t asm_count = 0;
+    auto domain = il2cpp_domain_get();
+    auto assemblies = il2cpp_domain_get_assemblies(domain, &asm_count);
+    if (!assemblies || asm_count == 0) {
+        LOGE("no assemblies found - is the game fully loaded?");
+        return;
+    }
+    LOGI("found %zu assemblies", asm_count);
+
+    // Log all image names for debugging
+    for (size_t i = 0; i < asm_count; i++) {
+        auto img = il2cpp_assembly_get_image(assemblies[i]);
+        LOGD("  assembly[%zu]: %s", i, il2cpp_image_get_name(img));
+    }
+
+    auto image = il2cpp_assembly_get_image(assemblies[0]);
+    const char *first_name = il2cpp_image_get_name(image);
+    if (!first_name) {
+        LOGE("first image name is null");
+        return;
+    }
+
+    uintptr_t name_ptr = reinterpret_cast<uintptr_t>(first_name);
+    LOGI("using image name '%s' at %p as metadata breadcrumb", first_name, (void*)name_ptr);
+
+    // --- 2. Find the /proc/self/maps region containing this pointer ---
+    FILE *fp = fopen("/proc/self/maps", "r");
+    if (!fp) {
+        LOGE("failed to open /proc/self/maps (errno=%d)", errno);
+        return;
+    }
+
+    uint64_t region_start = 0, region_end = 0;
+    char region_perms[5] = {0};
+    char line[512];
+
+    while (fgets(line, sizeof(line), fp)) {
+        uint64_t start, end;
+        char perms[5] = {0};
+        if (sscanf(line, "%" PRIx64 "-%" PRIx64 " %4s %*s %*s %*s %*s",
+                   &start, &end, perms) < 3) continue;
+        if (name_ptr >= start && name_ptr < end) {
+            region_start = start;
+            region_end = end;
+            memcpy(region_perms, perms, 4);
+            region_perms[4] = '\0';
+            break;
+        }
+    }
+    fclose(fp);
+
+    if (region_start == 0) {
+        LOGE("could not find memory region containing image name at %p", (void*)name_ptr);
+        return;
+    }
+
+    size_t meta_size = region_end - region_start;
+    if (meta_size > kMaxMetadataSize) {
+        LOGW("metadata region %zu MB exceeds cap of %zu MB, clamping",
+             meta_size / (1024 * 1024), (size_t)kMaxMetadataSize / (1024 * 1024));
+        meta_size = kMaxMetadataSize;
+    }
+
+    LOGI("metadata region: [0x%" PRIx64 "-0x%" PRIx64 "] %s, size=%zu (%.2f MB)",
+         region_start, region_end, region_perms,
+         meta_size, meta_size / (1024.0 * 1024.0));
+
+    // --- 3. Write the region to file ---
+    auto outPath = std::string(outDir).append("/files/global-metadata.dat");
+    FILE *out = fopen(outPath.c_str(), "wb");
+    if (!out) {
+        LOGE("failed to create %s (errno=%d)", outPath.c_str(), errno);
+        return;
+    }
+
+    const auto *meta_start = reinterpret_cast<const uint8_t *>(region_start);
+    size_t written = fwrite(meta_start, 1, meta_size, out);
+    fclose(out);
+
+    if (written != meta_size) {
+        LOGE("write incomplete: %zu / %zu bytes (errno=%d)", written, meta_size, errno);
+        return;
+    }
+
+    LOGI("dumped %zu bytes to %s", written, outPath.c_str());
+
+    // --- 4. Validate the dumped file ---
+    LOGI("validating dumped metadata...");
+    validate_metadata_file(outPath.c_str());
+
+    LOGI("dump global-metadata.dat: done.");
 }
