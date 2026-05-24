@@ -127,8 +127,20 @@ typedef struct Il2CppType {
     unsigned int pinned: 1;
 } Il2CppType;
 
+struct Il2CppTypeArray {
+    Il2CppType** vector;
+    uint32_t length;
+};
+
+struct Il2CppGenericContext {
+    const Il2CppTypeArray* class_inst;
+    const Il2CppTypeArray* method_inst;
+};
+
 typedef struct MethodInfo {
     Il2CppMethodPointer methodPointer;
+    uint8_t is_inflated;
+    uint8_t is_generic;
 } MethodInfo;
 
 typedef struct Il2CppObject {

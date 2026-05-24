@@ -215,8 +215,8 @@ int test_json_output() {
             printf("  FAIL: stringliteral.json invalid JSON\n"); fail++;
         } else { printf("  OK: stringliteral.json valid\n"); }
 
-        // Check hex address format
-        if (content.find("0xabcd") == std::string::npos) {
+        // Check hex address format (desktop Il2CppDumper uses uppercase hex: "0xABCD")
+        if (content.find("0xABCD") == std::string::npos) {
             printf("  FAIL: hex address not found in stringliteral.json\n"); fail++;
         } else { printf("  OK: hex address format in stringliteral.json\n"); }
 

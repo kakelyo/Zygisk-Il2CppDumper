@@ -490,6 +490,29 @@ void il2cpp_dump(const char *outDir) {
         }
     }
 
+    // Also collect method pointers from generic instance classes via il2cpp_class_for_each.
+    // The desktop Il2CppDumper includes genericMethodPointers in the Addresses array.
+    // il2cpp_class_for_each iterates ALL classes including inflated generic instances,
+    // which gives us method pointers that il2cpp_image_get_class may miss.
+    if (il2cpp_class_for_each) {
+        struct ClassForEachData {
+            std::set<uint64_t> *addrSet;
+            uint64_t base;
+        } cb_data{&addressSet, il2cpp_base};
+
+        il2cpp_class_for_each([](Il2CppClass *klass, void *userData) {
+            auto *data = static_cast<ClassForEachData *>(userData);
+            void *iter = nullptr;
+            while (auto method = il2cpp_class_get_methods(klass, &iter)) {
+                if (!method->methodPointer) continue;
+                uint64_t rva = (uint64_t) method->methodPointer - data->base;
+                if (rva != 0) {
+                    data->addrSet->insert(rva);
+                }
+            }
+        }, &cb_data);
+    }
+
     // Remove null address and sort
     addressSet.erase(0);
     std::vector<uint64_t> addresses(addressSet.begin(), addressSet.end());
@@ -506,6 +529,17 @@ void il2cpp_dump(const char *outDir) {
         scriptStrings = extract_strings(meta_ptr, meta_size, il2cpp_base);
         LOGI("extracted %zu string literals", scriptStrings.size());
     }
+
+    // Determine metadata version for version-dependent behavior
+    int32_t metadata_version = 29;  // default to latest
+    if (meta_ptr && meta_size >= 8) {
+        int32_t ver;
+        memcpy(&ver, meta_ptr + 4, 4);
+        if (ver >= 16 && ver <= 32) {
+            metadata_version = ver;
+        }
+    }
+    set_metadata_version(metadata_version);
 
     // Extract ScriptMetadata and ScriptMetadataMethod
     std::vector<MetadataEntry> scriptMetadata;
@@ -534,7 +568,7 @@ void il2cpp_dump(const char *outDir) {
     // Write il2cpp.h (Phase 4)
     LOGI("generating il2cpp.h...");
     auto type_info = collect_type_info();
-    write_il2cpp_h(outDir, type_info);
+    write_il2cpp_h(outDir, type_info, metadata_version);
 }
 
 // ------------------------------------------------------------

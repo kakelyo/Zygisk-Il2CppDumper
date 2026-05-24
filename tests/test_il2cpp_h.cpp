@@ -17,14 +17,10 @@ int test_generate_il2cpp_h_empty() {
     std::vector<StructInfo> types;
     auto content = generate_il2cpp_h_content(types);
 
-    if (content.empty()) {
-        printf("  FAIL: empty types should still produce content\n"); fail++;
-    } else { printf("  OK: empty types produces content\n"); }
-
-    // Should have forward declarations section
-    if (content.find("// Forward declarations") == std::string::npos) {
-        printf("  FAIL: missing forward declarations section\n"); fail++;
-    } else { printf("  OK: forward declarations section present\n"); }
+    // Empty types should produce empty content (desktop Il2CppDumper behavior)
+    if (!content.empty()) {
+        printf("  FAIL: empty types should produce empty content\n"); fail++;
+    } else { printf("  OK: empty types produces empty content\n"); }
 
     printf("  test_generate_il2cpp_h_empty: %d failures\n", fail);
     return fail;
@@ -78,6 +74,11 @@ int test_generate_il2cpp_h_simple_class() {
     if (content.find("struct Game_Player_c {") == std::string::npos) {
         printf("  FAIL: _c struct not found\n"); fail++;
     } else { printf("  OK: _c struct found\n"); }
+
+    // Check _c has VirtualInvokeData vtable[32] (no vtable methods)
+    if (content.find("VirtualInvokeData vtable[32];") == std::string::npos) {
+        printf("  FAIL: _c should have VirtualInvokeData vtable[32] when no vtable methods\n"); fail++;
+    } else { printf("  OK: _c has VirtualInvokeData vtable[32]\n"); }
 
     // Check _o struct
     if (content.find("struct Game_Player_o {") == std::string::npos) {
@@ -297,13 +298,13 @@ int test_generate_il2cpp_h_static_fields() {
         printf("  FAIL: _StaticFields struct not found\n"); fail++;
     } else { printf("  OK: _StaticFields struct found\n"); }
 
-    // Check static field in _StaticFields
+    // Check static field in _StaticFields (desktop format: struct prefix for custom types)
     if (content.find("struct Game_Manager_o* Instance;") == std::string::npos) {
         printf("  FAIL: static field not found in _StaticFields\n"); fail++;
     } else { printf("  OK: static field in _StaticFields\n"); }
 
     // Check _c references _StaticFields
-    if (content.find("Game_Manager_StaticFields* static_fields;") == std::string::npos) {
+    if (content.find("struct Game_Manager_StaticFields* static_fields;") == std::string::npos) {
         printf("  FAIL: _c should reference _StaticFields*\n"); fail++;
     } else { printf("  OK: _c references _StaticFields*\n"); }
 

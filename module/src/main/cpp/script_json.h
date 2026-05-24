@@ -7,6 +7,7 @@
 //
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@
 struct Il2CppType;
 struct Il2CppClass;
 struct MethodInfo;
+struct Il2CppGenericContext;
 
 // ----------------------------------------------------------------
 // Data structures for script.json entries
@@ -22,7 +24,7 @@ struct MethodInfo;
 struct ScriptMethodEntry {
     uint64_t address;        // RVA (methodPointer - il2cpp_base)
     std::string name;        // "Namespace.Type$$Method"
-    std::string signature;   // "void Namespace_Type_Method (Namespace_Type_o* __this, int32_t x, const MethodInfo* method);"
+    std::string signature;   // "void Namespace_Type__Method (Namespace_Type_o* __this, int32_t x, const MethodInfo* method);"
     std::string type_sig;    // "vii" etc.
 };
 
@@ -60,8 +62,14 @@ std::string escape_json(const std::string &s);
 // void→'v', float→'f', double→'d', int64/uint64→'j', everything else→'i'
 char type_to_signature_char(const Il2CppType *type);
 
-// Build the full TypeSignature string for a method (return + params)
+// Build the full TypeSignature string for a method (return + params + MethodInfo)
 std::string build_type_signature(const MethodInfo *method);
+
+// Set the global metadata version for version-dependent behavior
+void set_metadata_version(int32_t version);
+
+// Get a unique struct name by appending _1, _2, etc. if the name is already used
+std::string get_unique_struct_name(const std::string &name, std::set<std::string> &used_names);
 
 // ----------------------------------------------------------------
 // Metadata parsing — string literal extraction (Phase 2)
@@ -92,13 +100,30 @@ void extract_metadata_from_blob(const uint8_t *metadata, size_t metadata_size,
                                  std::vector<MetadataEntry> &meta_out,
                                  std::vector<MetadataMethodEntry> &meta_method_out);
 
+// Extract metadata with proper Address values from the metadataUsages pointer array.
+// For v19-v24.5 semantics: Address = RVA of the actual object pointed to.
+void extract_metadata_with_usage_addresses(const void** metadataUsages,
+                                            size_t metadataUsageCount,
+                                            uint64_t il2cpp_base_val,
+                                            std::vector<MetadataEntry> &meta_out,
+                                            std::vector<MetadataMethodEntry> &meta_method_out);
+
+// Binary scan for v25+ metadata — scans data segments for encoded tokens.
+// For v27+: Address = RVA of the pointer slot itself.
+void extract_metadata_from_binary_scan(const uint8_t *data_start, size_t data_size,
+                                        int32_t version,
+                                        uint64_t il2cpp_base_val,
+                                        std::vector<MetadataEntry> &meta_out,
+                                        std::vector<MetadataMethodEntry> &meta_method_out);
+
 // ----------------------------------------------------------------
 // Functions requiring il2cpp runtime — not unit-testable on host
 // ----------------------------------------------------------------
 
 // Convert an Il2CppType to a C type string for use in signatures
 // e.g. IL2CPP_TYPE_I4 → "int32_t", IL2CPP_TYPE_CLASS → "ClassName_o*"
-std::string parse_type(const Il2CppType *type);
+// context: optional generic context for substituting VAR/MVAR type parameters
+std::string parse_type(const Il2CppType *type, const Il2CppGenericContext *context = nullptr);
 
 // Build the full C-style method signature string
 std::string build_signature(const MethodInfo *method, Il2CppClass *klass);
