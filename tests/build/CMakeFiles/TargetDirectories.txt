@@ -1,0 +1,3 @@
+/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles/test_runner.dir
+/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles/edit_cache.dir
+/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles/rebuild_cache.dir

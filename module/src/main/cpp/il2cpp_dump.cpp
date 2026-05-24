@@ -3,6 +3,8 @@
 //
 
 #include "il2cpp_dump.h"
+#include "script_json.h"
+#include "il2cpp_h.h"
 #include <dlfcn.h>
 #include <cstdlib>
 #include <cstring>
@@ -26,7 +28,7 @@
 
 #undef DO_API
 
-static uint64_t il2cpp_base = 0;
+uint64_t il2cpp_base = 0;
 
 // ------------------------------------------------------------------
 // global-metadata.dat header (aka Il2CppGlobalMetadataHeader)
@@ -449,8 +451,90 @@ void il2cpp_dump(const char *outDir) {
     outStream.close();
     LOGI("dump done!");
 
-    // Dump the (already decrypted) global-metadata.dat from memory
-    il2cpp_dump_global_metadata(outDir);
+    // Generate script.json (IDA symbol table)
+    LOGI("generating script.json...");
+    std::vector<ScriptMethodEntry> scriptMethods;
+    std::set<uint64_t> addressSet;
+
+    for (int i = 0; i < size; ++i) {
+        auto image = il2cpp_assembly_get_image(assemblies[i]);
+        auto classCount = il2cpp_image_get_class_count(image);
+        for (int j = 0; j < classCount; ++j) {
+            auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
+            void *iter = nullptr;
+            while (auto method = il2cpp_class_get_methods(klass, &iter)) {
+                if (!method->methodPointer) continue;
+
+                uint64_t rva = (uint64_t) method->methodPointer - il2cpp_base;
+                if (rva == 0) continue;
+
+                ScriptMethodEntry entry;
+                entry.address = rva;
+
+                // Name: "Namespace.Type$$Method"
+                auto ns = il2cpp_class_get_namespace(klass);
+                auto cn = il2cpp_class_get_name(klass);
+                auto mn = il2cpp_method_get_name(method);
+                if (ns && ns[0] != '\0') {
+                    entry.name = std::string(ns) + "." + std::string(cn) + "$$" + std::string(mn);
+                } else {
+                    entry.name = std::string(cn) + "$$" + std::string(mn);
+                }
+
+                entry.signature = build_signature(method, klass);
+                entry.type_sig = build_type_signature(method);
+
+                scriptMethods.push_back(entry);
+                addressSet.insert(rva);
+            }
+        }
+    }
+
+    // Remove null address and sort
+    addressSet.erase(0);
+    std::vector<uint64_t> addresses(addressSet.begin(), addressSet.end());
+
+    // Dump the (already decrypted) global-metadata.dat from memory.
+    // This also finds the metadata pointer so we can extract string literals.
+    size_t meta_size = 0;
+    auto *meta_ptr = il2cpp_dump_global_metadata(outDir, &meta_size);
+
+    // Extract string literals from metadata in memory
+    std::vector<StringEntry> scriptStrings;
+    if (meta_ptr && meta_size > 0) {
+        LOGI("extracting string literals from metadata...");
+        scriptStrings = extract_strings(meta_ptr, meta_size, il2cpp_base);
+        LOGI("extracted %zu string literals", scriptStrings.size());
+    }
+
+    // Extract ScriptMetadata and ScriptMetadataMethod
+    std::vector<MetadataEntry> scriptMetadata;
+    std::vector<MetadataMethodEntry> scriptMetadataMethod;
+
+    // Try metadataUsage-based extraction first (v19-v24.5)
+    if (meta_ptr && meta_size > 0) {
+        LOGI("extracting metadata usage from blob...");
+        extract_metadata_from_blob(meta_ptr, meta_size, il2cpp_base,
+                                   scriptMetadata, scriptMetadataMethod);
+    }
+
+    // Always use runtime API as the primary source (provides real Address values)
+    LOGI("extracting metadata from runtime API...");
+    extract_metadata_from_runtime(scriptMetadata, scriptMetadataMethod);
+
+    // Write script.json with all data (methods + strings + metadata + addresses)
+    write_script_json(outDir, scriptMethods, scriptStrings,
+                      scriptMetadata, scriptMetadataMethod, addresses);
+
+    // Write stringliteral.json separately
+    if (!scriptStrings.empty()) {
+        write_stringliteral_json(outDir, scriptStrings);
+    }
+
+    // Write il2cpp.h (Phase 4)
+    LOGI("generating il2cpp.h...");
+    auto type_info = collect_type_info();
+    write_il2cpp_h(outDir, type_info);
 }
 
 // ------------------------------------------------------------
@@ -517,29 +601,25 @@ static bool validate_metadata_file(const char *path) {
     return magic_ok && version_ok;
 }
 
-void il2cpp_dump_global_metadata(const char *outDir) {
+const uint8_t* il2cpp_dump_global_metadata(const char *outDir, size_t *out_meta_size) {
     LOGI("ok dump global-metadata.dat: starting...");
 
     if (il2cpp_base == 0) {
         LOGE("il2cpp_base is 0, il2cpp API not initialized");
-        return;
+        return nullptr;
     }
     LOGI("il2cpp_base: 0x%" PRIx64, il2cpp_base);
 
     // --- 1. Get a string pointer that lives inside the metadata ---
-    //     Any image name returned by il2cpp_image_get_name() is
-    //     stored directly in the metadata string table, so we can
-    //     use it to locate the metadata blob.
     size_t asm_count = 0;
     auto domain = il2cpp_domain_get();
     auto assemblies = il2cpp_domain_get_assemblies(domain, &asm_count);
     if (!assemblies || asm_count == 0) {
         LOGE("no assemblies found - is the game fully loaded?");
-        return;
+        return nullptr;
     }
     LOGI("found %zu assemblies", asm_count);
 
-    // Log all image names for debugging
     for (size_t i = 0; i < asm_count; i++) {
         auto img = il2cpp_assembly_get_image(assemblies[i]);
         LOGD("  assembly[%zu]: %s", i, il2cpp_image_get_name(img));
@@ -549,7 +629,7 @@ void il2cpp_dump_global_metadata(const char *outDir) {
     const char *first_name = il2cpp_image_get_name(image);
     if (!first_name) {
         LOGE("first image name is null");
-        return;
+        return nullptr;
     }
 
     uintptr_t name_ptr = reinterpret_cast<uintptr_t>(first_name);
@@ -559,7 +639,7 @@ void il2cpp_dump_global_metadata(const char *outDir) {
     FILE *fp = fopen("/proc/self/maps", "r");
     if (!fp) {
         LOGE("failed to open /proc/self/maps (errno=%d)", errno);
-        return;
+        return nullptr;
     }
 
     uint64_t region_start = 0, region_end = 0;
@@ -583,7 +663,7 @@ void il2cpp_dump_global_metadata(const char *outDir) {
 
     if (region_start == 0) {
         LOGE("could not find memory region containing image name at %p", (void*)name_ptr);
-        return;
+        return nullptr;
     }
 
     size_t meta_size = region_end - region_start;
@@ -602,7 +682,7 @@ void il2cpp_dump_global_metadata(const char *outDir) {
     FILE *out = fopen(outPath.c_str(), "wb");
     if (!out) {
         LOGE("failed to create %s (errno=%d)", outPath.c_str(), errno);
-        return;
+        return nullptr;
     }
 
     const auto *meta_start = reinterpret_cast<const uint8_t *>(region_start);
@@ -611,7 +691,7 @@ void il2cpp_dump_global_metadata(const char *outDir) {
 
     if (written != meta_size) {
         LOGE("write incomplete: %zu / %zu bytes (errno=%d)", written, meta_size, errno);
-        return;
+        return nullptr;
     }
 
     LOGI("dumped %zu bytes to %s", written, outPath.c_str());
@@ -621,4 +701,6 @@ void il2cpp_dump_global_metadata(const char *outDir) {
     validate_metadata_file(outPath.c_str());
 
     LOGI("dump global-metadata.dat: done.");
+    if (out_meta_size) *out_meta_size = meta_size;
+    return meta_start;
 }
