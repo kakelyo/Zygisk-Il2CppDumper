@@ -1132,9 +1132,6 @@ void extract_metadata_from_blob(const uint8_t *metadata, size_t metadata_size,
         entry.method_address = 0;
         meta_method_out.push_back(entry);
     }
-
-    LOGI("extract_metadata_from_blob: %u ScriptMetadata, %u ScriptMetadataMethod",
-         meta_out.size(), meta_method_out.size());
 }
 
 // ================================================================
@@ -1285,9 +1282,6 @@ void extract_metadata_from_runtime(std::vector<MetadataEntry> &meta_out,
             }
         }
     }
-
-    LOGI("extract_metadata_from_runtime: %u ScriptMetadata, %u ScriptMetadataMethod",
-         meta_out.size(), meta_method_out.size());
 }
 
 // ================================================================
@@ -1374,9 +1368,6 @@ void extract_metadata_from_binary_scan(const uint8_t *data_start, size_t data_si
             }
         }
     }
-
-    LOGI("extract_metadata_from_binary_scan: %u ScriptMetadata, %u ScriptMetadataMethod",
-         meta_out.size(), meta_method_out.size());
 }
 
 // ================================================================
@@ -1472,9 +1463,6 @@ void write_script_json(const char *outDir,
 
     f << "}\n";
     f.close();
-
-    LOGI("script.json done! %u ScriptMethod, %u ScriptString, %u ScriptMetadata, %u ScriptMetadataMethod, %u Addresses",
-         (unsigned)methods.size(), (unsigned)strings.size(), (unsigned)metadata.size(), (unsigned)metadata_methods.size(), (unsigned)addresses.size());
 }
 
 void write_stringliteral_json(const char *outDir,
@@ -1500,6 +1488,4 @@ void write_stringliteral_json(const char *outDir,
     }
     f << "]\n";
     f.close();
-
-    LOGI("stringliteral.json done! %u entries", (unsigned)strings.size());
 }
