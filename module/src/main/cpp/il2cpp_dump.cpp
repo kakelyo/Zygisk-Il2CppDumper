@@ -459,7 +459,7 @@ void il2cpp_dump(const char *outDir) {
     for (int i = 0; i < size; ++i) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         auto classCount = il2cpp_image_get_class_count(image);
-        LOGI("  assembly %d/%d: %zu classes", i + 1, size, classCount);
+        LOGI("  assembly %d/%d: %u classes", i + 1, size, (unsigned)classCount);
         for (int j = 0; j < classCount; ++j) {
             auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
             if (!klass) continue;
@@ -491,7 +491,7 @@ void il2cpp_dump(const char *outDir) {
             }
         }
     }
-    LOGI("  collected %zu script methods, %zu addresses", scriptMethods.size(), addressSet.size());
+    LOGI("  collected %u script methods, %u addresses", (unsigned)scriptMethods.size(), (unsigned)addressSet.size());
 
     // Remove null address and sort
     addressSet.erase(0);
@@ -508,7 +508,7 @@ void il2cpp_dump(const char *outDir) {
     if (meta_ptr && meta_size > 0) {
         LOGI("extracting string literals from metadata...");
         scriptStrings = extract_strings(meta_ptr, meta_size, il2cpp_base);
-        LOGI("extracted %zu string literals", scriptStrings.size());
+        LOGI("extracted %u string literals", (unsigned)scriptStrings.size());
     }
 
     // Determine metadata version for version-dependent behavior
@@ -538,9 +538,9 @@ void il2cpp_dump(const char *outDir) {
     extract_metadata_from_runtime(scriptMetadata, scriptMetadataMethod);
 
     // Write script.json with all data (methods + strings + metadata + addresses)
-    LOGI("writing script.json (%zu methods, %zu strings, %zu metadata, %zu meta_methods, %zu addresses)...",
-         scriptMethods.size(), scriptStrings.size(),
-         scriptMetadata.size(), scriptMetadataMethod.size(), addresses.size());
+    LOGI("writing script.json (%u methods, %u strings, %u metadata, %u meta_methods, %u addresses)...",
+         (unsigned)scriptMethods.size(), (unsigned)scriptStrings.size(),
+         (unsigned)scriptMetadata.size(), (unsigned)scriptMetadataMethod.size(), (unsigned)addresses.size());
     write_script_json(outDir, scriptMethods, scriptStrings,
                       scriptMetadata, scriptMetadataMethod, addresses);
 
@@ -553,7 +553,7 @@ void il2cpp_dump(const char *outDir) {
     // Write il2cpp.h (Phase 4)
     LOGI("generating il2cpp.h...");
     auto type_info = collect_type_info();
-    LOGI("collected %zu types for il2cpp.h", type_info.size());
+    LOGI("collected %u types for il2cpp.h", (unsigned)type_info.size());
     write_il2cpp_h(outDir, type_info, metadata_version);
     LOGI("all output files generated!");
 }
@@ -639,11 +639,11 @@ const uint8_t* il2cpp_dump_global_metadata(const char *outDir, size_t *out_meta_
         LOGE("no assemblies found - is the game fully loaded?");
         return nullptr;
     }
-    LOGI("found %zu assemblies", asm_count);
+    LOGI("found %u assemblies", (unsigned)asm_count);
 
     for (size_t i = 0; i < asm_count; i++) {
         auto img = il2cpp_assembly_get_image(assemblies[i]);
-        LOGD("  assembly[%zu]: %s", i, il2cpp_image_get_name(img));
+        LOGD("  assembly[%u]: %s", (unsigned)i, il2cpp_image_get_name(img));
     }
 
     auto image = il2cpp_assembly_get_image(assemblies[0]);
@@ -689,14 +689,14 @@ const uint8_t* il2cpp_dump_global_metadata(const char *outDir, size_t *out_meta_
 
     size_t meta_size = region_end - region_start;
     if (meta_size > kMaxMetadataSize) {
-        LOGW("metadata region %zu MB exceeds cap of %zu MB, clamping",
-             meta_size / (1024 * 1024), (size_t)kMaxMetadataSize / (1024 * 1024));
+        LOGW("metadata region %u MB exceeds cap of %u MB, clamping",
+             (unsigned)(meta_size / (1024 * 1024)), (unsigned)(kMaxMetadataSize / (1024 * 1024)));
         meta_size = kMaxMetadataSize;
     }
 
-    LOGI("metadata region: [0x%" PRIx64 "-0x%" PRIx64 "] %s, size=%zu (%.2f MB)",
+    LOGI("metadata region: [0x%" PRIx64 "-0x%" PRIx64 "] %s, size=%u (%.2f MB)",
          region_start, region_end, region_perms,
-         meta_size, meta_size / (1024.0 * 1024.0));
+         (unsigned)meta_size, meta_size / (1024.0 * 1024.0));
 
     // --- 3. Write the region to file ---
     auto outPath = std::string(outDir).append("/files/global-metadata.dat");
@@ -711,11 +711,11 @@ const uint8_t* il2cpp_dump_global_metadata(const char *outDir, size_t *out_meta_
     fclose(out);
 
     if (written != meta_size) {
-        LOGE("write incomplete: %zu / %zu bytes (errno=%d)", written, meta_size, errno);
+        LOGE("write incomplete: %u / %u bytes (errno=%d)", (unsigned)written, (unsigned)meta_size, errno);
         return nullptr;
     }
 
-    LOGI("dumped %zu bytes to %s", written, outPath.c_str());
+    LOGI("dumped %u bytes to %s", (unsigned)written, outPath.c_str());
 
     // --- 4. Validate the dumped file ---
     LOGI("validating dumped metadata...");

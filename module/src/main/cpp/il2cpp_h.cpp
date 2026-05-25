@@ -1179,7 +1179,7 @@ std::vector<StructInfo> collect_type_info() {
         }
     }
 
-    LOGI("collect_type_info: collected %zu types", result.size());
+    LOGI("collect_type_info: collected %u types", (unsigned)result.size());
     return result;
 }
 
@@ -1368,5 +1368,5 @@ void write_il2cpp_h(const char *outDir, const std::vector<StructInfo> &types, in
     f << generate_il2cpp_h_content(types);
 
     f.close();
-    LOGI("il2cpp.h done! %zu types", types.size());
+    LOGI("il2cpp.h done! %u types", (unsigned)types.size());
 }
