@@ -459,7 +459,7 @@ void il2cpp_dump(const char *outDir) {
     for (int i = 0; i < size; ++i) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         auto classCount = il2cpp_image_get_class_count(image);
-        LOGI("  assembly %d/%d: %d classes", i + 1, size, (int)classCount);
+        LOGI("  assembly %d/%d: %zu classes", i + 1, size, classCount);
         for (int j = 0; j < classCount; ++j) {
             auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
             if (!klass) continue;
@@ -483,15 +483,8 @@ void il2cpp_dump(const char *outDir) {
                     entry.name = std::string(cn) + "$$" + std::string(mn);
                 }
 
-                // Build signature and type signature with error protection
-                // to avoid deadlocks from il2cpp_class_from_type on unloaded types
-                try {
-                    entry.signature = build_signature(method, klass);
-                    entry.type_sig = build_type_signature(method);
-                } catch (...) {
-                    entry.signature = "void _unknown_ ();";
-                    entry.type_sig = "v";
-                }
+                entry.signature = build_signature(method, klass);
+                entry.type_sig = build_type_signature(method);
 
                 scriptMethods.push_back(entry);
                 addressSet.insert(rva);
