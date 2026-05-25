@@ -11,12 +11,12 @@
 // Logging: use Android logcat in production, printf in test mode.
 // When SCRIPT_JSON_TEST is defined (via CMake for unit tests),
 // log.h is not included and LOGI/LOGE are defined as no-ops.
-#ifndef SCRIPT_JSON_TEST
-#include "log.h"
-#else
+#ifdef SCRIPT_JSON_TEST
 #include <cstdio>
 #define LOGI(...) do { printf("[INFO ] "); printf(__VA_ARGS__); printf("\n"); } while(0)
 #define LOGE(...) do { fprintf(stderr, "[ERROR] "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+#else
+#include "log.h"
 #endif
 
 #include "il2cpp-class.h"

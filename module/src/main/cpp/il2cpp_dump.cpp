@@ -459,8 +459,10 @@ void il2cpp_dump(const char *outDir) {
     for (int i = 0; i < size; ++i) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         auto classCount = il2cpp_image_get_class_count(image);
+        LOGI("  assembly %d/%d: %d classes", i + 1, size, (int)classCount);
         for (int j = 0; j < classCount; ++j) {
             auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
+            if (!klass) continue;
             void *iter = nullptr;
             while (auto method = il2cpp_class_get_methods(klass, &iter)) {
                 if (!method->methodPointer) continue;
@@ -481,37 +483,22 @@ void il2cpp_dump(const char *outDir) {
                     entry.name = std::string(cn) + "$$" + std::string(mn);
                 }
 
-                entry.signature = build_signature(method, klass);
-                entry.type_sig = build_type_signature(method);
+                // Build signature and type signature with error protection
+                // to avoid deadlocks from il2cpp_class_from_type on unloaded types
+                try {
+                    entry.signature = build_signature(method, klass);
+                    entry.type_sig = build_type_signature(method);
+                } catch (...) {
+                    entry.signature = "void _unknown_ ();";
+                    entry.type_sig = "v";
+                }
 
                 scriptMethods.push_back(entry);
                 addressSet.insert(rva);
             }
         }
     }
-
-    // Also collect method pointers from generic instance classes via il2cpp_class_for_each.
-    // The desktop Il2CppDumper includes genericMethodPointers in the Addresses array.
-    // il2cpp_class_for_each iterates ALL classes including inflated generic instances,
-    // which gives us method pointers that il2cpp_image_get_class may miss.
-    if (il2cpp_class_for_each) {
-        struct ClassForEachData {
-            std::set<uint64_t> *addrSet;
-            uint64_t base;
-        } cb_data{&addressSet, il2cpp_base};
-
-        il2cpp_class_for_each([](Il2CppClass *klass, void *userData) {
-            auto *data = static_cast<ClassForEachData *>(userData);
-            void *iter = nullptr;
-            while (auto method = il2cpp_class_get_methods(klass, &iter)) {
-                if (!method->methodPointer) continue;
-                uint64_t rva = (uint64_t) method->methodPointer - data->base;
-                if (rva != 0) {
-                    data->addrSet->insert(rva);
-                }
-            }
-        }, &cb_data);
-    }
+    LOGI("  collected %zu script methods, %zu addresses", scriptMethods.size(), addressSet.size());
 
     // Remove null address and sort
     addressSet.erase(0);
@@ -519,6 +506,7 @@ void il2cpp_dump(const char *outDir) {
 
     // Dump the (already decrypted) global-metadata.dat from memory.
     // This also finds the metadata pointer so we can extract string literals.
+    LOGI("dumping global-metadata.dat...");
     size_t meta_size = 0;
     auto *meta_ptr = il2cpp_dump_global_metadata(outDir, &meta_size);
 
@@ -557,18 +545,24 @@ void il2cpp_dump(const char *outDir) {
     extract_metadata_from_runtime(scriptMetadata, scriptMetadataMethod);
 
     // Write script.json with all data (methods + strings + metadata + addresses)
+    LOGI("writing script.json (%zu methods, %zu strings, %zu metadata, %zu meta_methods, %zu addresses)...",
+         scriptMethods.size(), scriptStrings.size(),
+         scriptMetadata.size(), scriptMetadataMethod.size(), addresses.size());
     write_script_json(outDir, scriptMethods, scriptStrings,
                       scriptMetadata, scriptMetadataMethod, addresses);
 
     // Write stringliteral.json separately
     if (!scriptStrings.empty()) {
+        LOGI("writing stringliteral.json...");
         write_stringliteral_json(outDir, scriptStrings);
     }
 
     // Write il2cpp.h (Phase 4)
     LOGI("generating il2cpp.h...");
     auto type_info = collect_type_info();
+    LOGI("collected %zu types for il2cpp.h", type_info.size());
     write_il2cpp_h(outDir, type_info, metadata_version);
+    LOGI("all output files generated!");
 }
 
 // ------------------------------------------------------------
