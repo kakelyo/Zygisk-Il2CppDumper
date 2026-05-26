@@ -823,6 +823,17 @@ static std::string build_generic_type_name(Il2CppClass *klass) {
 // Runtime API — collect type info
 // ================================================================
 
+// Global type name cache: Il2CppType* → type name info
+// Built during collect_type_info() to avoid calling il2cpp_class_from_type
+// which may trigger class initialization and crash.
+struct TypeNameCacheEntry {
+    std::string name;       // e.g. "Game_Player"
+    bool is_value_type;
+    bool is_enum;
+    std::string enum_base;  // empty if not enum
+};
+static std::map<const Il2CppType*, TypeNameCacheEntry> g_type_name_cache;
+
 std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, bool *is_custom_type,
                                  const Il2CppGenericContext *context) {
     *is_value_type = false;
@@ -869,21 +880,41 @@ std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, boo
     case IL2CPP_TYPE_VALUETYPE: {
         *is_value_type = true;
         *is_custom_type = true;
-        auto klass = il2cpp_class_from_type ? il2cpp_class_from_type(type) : nullptr;
-        if (klass && il2cpp_class_is_enum && il2cpp_class_is_enum(klass)) {
-            // Enum → use underlying type
-            *is_value_type = false;
-            *is_custom_type = false;
-            auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
-            if (base_type) {
-                return get_field_type_name(base_type, is_value_type, is_custom_type, context);
+        // Use cache to avoid il2cpp_class_from_type which may crash
+        auto it = g_type_name_cache.find(type);
+        if (it != g_type_name_cache.end()) {
+            if (it->second.is_enum) {
+                *is_value_type = false;
+                *is_custom_type = false;
+                if (!it->second.enum_base.empty()) {
+                    // Parse the enum base type string back to a type
+                    // For simplicity, just return the cached base type name
+                    return it->second.enum_base;
+                }
+                return "int32_t";
             }
-            return "int32_t";
+            return it->second.name + "_o";
         }
-        auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
-        auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
-        std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
-        return fix_name(full.c_str()) + "_o";
+        // Fallback: try il2cpp_class_from_type (may crash on some types)
+        if (il2cpp_class_from_type) {
+            auto klass = il2cpp_class_from_type(type);
+            if (klass) {
+                if (il2cpp_class_is_enum && il2cpp_class_is_enum(klass)) {
+                    *is_value_type = false;
+                    *is_custom_type = false;
+                    auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
+                    if (base_type) {
+                        return get_field_type_name(base_type, is_value_type, is_custom_type, context);
+                    }
+                    return "int32_t";
+                }
+                auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
+                auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
+                std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
+                return fix_name(full.c_str()) + "_o";
+            }
+        }
+        return "Il2CppObject*";
     }
 
     case IL2CPP_TYPE_STRING:
@@ -897,17 +928,18 @@ std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, boo
     case IL2CPP_TYPE_CLASS:
     case IL2CPP_TYPE_OBJECT: {
         *is_custom_type = true;
-        auto klass = il2cpp_class_from_type ? il2cpp_class_from_type(type) : nullptr;
-        if (klass) {
-            // Use generic type name for generic instances (Fix #15)
-            if (type->type == IL2CPP_TYPE_GENERICINST) {
-                auto name = build_generic_type_name(klass);
-                return name + "_o*";
+        auto it = g_type_name_cache.find(type);
+        if (it != g_type_name_cache.end()) {
+            return it->second.name + "_o*";
+        }
+        if (il2cpp_class_from_type) {
+            auto klass = il2cpp_class_from_type(type);
+            if (klass) {
+                auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
+                auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
+                std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
+                return fix_name(full.c_str()) + "_o*";
             }
-            auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
-            auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
-            std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
-            return fix_name(full.c_str()) + "_o*";
         }
         return "Il2CppObject*";
     }
@@ -915,20 +947,25 @@ std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, boo
     case IL2CPP_TYPE_SZARRAY:
     case IL2CPP_TYPE_ARRAY: {
         *is_custom_type = true;
-        auto klass = il2cpp_class_from_type ? il2cpp_class_from_type(type) : nullptr;
-        if (klass) {
-            auto elem = il2cpp_class_get_element_class ? il2cpp_class_get_element_class(klass) : nullptr;
-            if (elem) {
-                // Use generic type name for generic instances
-                auto elem_type = il2cpp_class_get_type ? il2cpp_class_get_type(elem) : nullptr;
-                if (elem_type && elem_type->type == IL2CPP_TYPE_GENERICINST) {
-                    auto name = build_generic_type_name(elem);
-                    return name + "_array*";
+        auto it = g_type_name_cache.find(type);
+        if (it != g_type_name_cache.end()) {
+            return it->second.name + "_array*";
+        }
+        if (il2cpp_class_from_type) {
+            auto klass = il2cpp_class_from_type(type);
+            if (klass) {
+                auto elem = il2cpp_class_get_element_class ? il2cpp_class_get_element_class(klass) : nullptr;
+                if (elem) {
+                    auto elem_type = il2cpp_class_get_type ? il2cpp_class_get_type(elem) : nullptr;
+                    if (elem_type && elem_type->type == IL2CPP_TYPE_GENERICINST) {
+                        auto name = build_generic_type_name(elem);
+                        return name + "_array*";
+                    }
+                    auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(elem) : "";
+                    auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(elem) : "";
+                    std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
+                    return fix_name(full.c_str()) + "_array*";
                 }
-                auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(elem) : "";
-                auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(elem) : "";
-                std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
-                return fix_name(full.c_str()) + "_array*";
             }
         }
         return "Il2CppObject_array*";
@@ -936,32 +973,37 @@ std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, boo
 
     case IL2CPP_TYPE_GENERICINST: {
         *is_custom_type = true;
-        auto klass = il2cpp_class_from_type ? il2cpp_class_from_type(type) : nullptr;
-        if (klass) {
-            bool is_vt = il2cpp_class_is_valuetype ? il2cpp_class_is_valuetype(klass) : false;
-            bool is_en = il2cpp_class_is_enum ? il2cpp_class_is_enum(klass) : false;
-
-            if (is_en) {
+        auto it = g_type_name_cache.find(type);
+        if (it != g_type_name_cache.end()) {
+            if (it->second.is_enum) {
                 *is_value_type = false;
                 *is_custom_type = false;
-                auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
-                if (base_type) {
-                    return get_field_type_name(base_type, is_value_type, is_custom_type, context);
+                return !it->second.enum_base.empty() ? it->second.enum_base : "int32_t";
+            }
+            if (it->second.is_value_type) *is_value_type = true;
+            return it->second.name + (it->second.is_value_type ? "_o" : "_o*");
+        }
+        if (il2cpp_class_from_type) {
+            auto klass = il2cpp_class_from_type(type);
+            if (klass) {
+                bool is_vt = il2cpp_class_is_valuetype ? il2cpp_class_is_valuetype(klass) : false;
+                bool is_en = il2cpp_class_is_enum ? il2cpp_class_is_enum(klass) : false;
+
+                if (is_en) {
+                    *is_value_type = false;
+                    *is_custom_type = false;
+                    auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
+                    if (base_type) {
+                        return get_field_type_name(base_type, is_value_type, is_custom_type, context);
+                    }
+                    return "int32_t";
                 }
-                return "int32_t";
-            }
 
-            if (is_vt) {
-                *is_value_type = true;
-            }
+                if (is_vt) { *is_value_type = true; }
 
-            // Build proper generic instance name (Fix #15)
-            auto name = build_generic_type_name(klass);
-
-            if (is_vt) {
-                return name + "_o";
+                auto name = build_generic_type_name(klass);
+                return is_vt ? name + "_o" : name + "_o*";
             }
-            return name + "_o*";
         }
         return "Il2CppObject*";
     }
@@ -1025,11 +1067,60 @@ std::vector<StructInfo> collect_type_info() {
     // Track used type names for uniqueness (Fix #2)
     std::set<std::string> used_type_names;
 
+    // Phase 1: Build type name cache from all loaded classes.
+    // This avoids calling il2cpp_class_from_type in get_field_type_name,
+    // which may trigger class initialization and crash.
+    g_type_name_cache.clear();
     for (size_t i = 0; i < asm_count; i++) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         if (!image) continue;
         auto class_count = il2cpp_image_get_class_count(image);
+        for (size_t j = 0; j < class_count; j++) {
+            auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
+            if (!klass) continue;
 
+            // Cache the class's Il2CppType → type name mapping
+            auto klass_type = il2cpp_class_get_type ? il2cpp_class_get_type(klass) : nullptr;
+            if (klass_type) {
+                TypeNameCacheEntry entry;
+                auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
+                auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
+                std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
+                entry.name = fix_name(full.c_str());
+                entry.is_value_type = il2cpp_class_is_valuetype ? il2cpp_class_is_valuetype(klass) : false;
+                entry.is_enum = il2cpp_class_is_enum ? il2cpp_class_is_enum(klass) : false;
+
+                // For generic instances, build proper name with type arguments
+                if (klass_type->type == IL2CPP_TYPE_GENERICINST) {
+                    entry.name = build_generic_type_name(klass);
+                }
+
+                // For enums, cache the base type name
+                if (entry.is_enum) {
+                    auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
+                    if (base_type) {
+                        bool dummy1, dummy2;
+                        entry.enum_base = get_field_type_name(base_type, &dummy1, &dummy2, nullptr);
+                    }
+                }
+
+                // Cache by Il2CppType pointer
+                g_type_name_cache[klass_type] = entry;
+
+                // Also cache the byval_arg and this_arg if they differ
+                // (Il2CppClass has byval_arg and this_arg which are separate Il2CppType instances)
+                // Access byval_arg from the class's _1 struct
+                // Note: We can't safely access byval_arg directly, but il2cpp_class_get_type
+                // returns the same as byval_arg for non-generic types.
+            }
+        }
+    }
+
+    // Phase 2: Collect struct info for each class
+    for (size_t i = 0; i < asm_count; i++) {
+        auto image = il2cpp_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        auto class_count = il2cpp_image_get_class_count(image);
         for (size_t j = 0; j < class_count; j++) {
             auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
             if (!klass) continue;
