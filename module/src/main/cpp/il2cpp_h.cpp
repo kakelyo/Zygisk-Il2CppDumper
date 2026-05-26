@@ -742,6 +742,18 @@ const char* get_version_header(int32_t version) {
 // get_unique_struct_name is defined in script_json.cpp (shared implementation)
 
 // ================================================================
+// Type name cache — avoids il2cpp_class_from_type which may crash
+// ================================================================
+
+struct TypeNameCacheEntry {
+    std::string name;       // e.g. "Game_Player"
+    bool is_value_type;
+    bool is_enum;
+    std::string enum_base;  // empty if not enum
+};
+static std::map<const Il2CppType*, TypeNameCacheEntry> g_type_name_cache;
+
+// ================================================================
 // Helper — build generic instance type name (Fix #15)
 // ================================================================
 
@@ -750,35 +762,41 @@ static std::string build_generic_type_name(Il2CppClass *klass);
 static std::string build_type_base_name_from_type(const Il2CppType *type) {
     if (!type) return "Unknown";
 
-    auto klass = il2cpp_class_from_type ? il2cpp_class_from_type(type) : nullptr;
-    if (!klass) {
-        // Fallback: use the type enum name
-        return "Unknown";
+    // Use cache first — avoids il2cpp_class_from_type which may crash
+    auto it = g_type_name_cache.find(type);
+    if (it != g_type_name_cache.end()) {
+        return it->second.name;
     }
 
-    // For generic instances, build the full generic name
-    if (type->type == IL2CPP_TYPE_GENERICINST) {
-        return build_generic_type_name(klass);
+    // For generic instances, try to build name from generic_class data
+    if (type->type == IL2CPP_TYPE_GENERICINST && type->data.generic_class) {
+        auto gc = reinterpret_cast<const Il2CppGenericClass*>(type->data.generic_class);
+        if (gc->context.class_inst) {
+            // Build name from generic arguments
+            std::string result;
+            auto inst = gc->context.class_inst;
+            for (uint32_t i = 0; i < inst->length; i++) {
+                if (inst->vector[i]) {
+                    auto arg_name = build_type_base_name_from_type(inst->vector[i]);
+                    if (i == 0) result = arg_name;
+                    else result += "_" + arg_name;
+                }
+            }
+            return result;
+        }
     }
 
-    // For other types, use namespace_classname
-    auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
-    auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
-
-    std::string base_name(cn ? cn : "");
-    // Strip backtick+arity suffix (e.g. List`1 -> List)
-    auto bt_pos = base_name.find('`');
-    if (bt_pos != std::string::npos) {
-        base_name = base_name.substr(0, bt_pos);
+    // For other types, we can't safely resolve the name without il2cpp_class_from_type.
+    // Return a generic name based on the type enum.
+    switch (type->type) {
+        case IL2CPP_TYPE_VALUETYPE: return "ValueType";
+        case IL2CPP_TYPE_CLASS: return "Class";
+        case IL2CPP_TYPE_OBJECT: return "Il2CppObject";
+        case IL2CPP_TYPE_STRING: return "System_String";
+        case IL2CPP_TYPE_SZARRAY:
+        case IL2CPP_TYPE_ARRAY: return "Array";
+        default: return "Unknown";
     }
-
-    std::string full;
-    if (ns && ns[0]) {
-        full = std::string(ns) + "_" + base_name;
-    } else {
-        full = base_name;
-    }
-    return fix_name(full.c_str());
 }
 
 static std::string build_generic_type_name(Il2CppClass *klass) {
@@ -822,17 +840,6 @@ static std::string build_generic_type_name(Il2CppClass *klass) {
 // ================================================================
 // Runtime API — collect type info
 // ================================================================
-
-// Global type name cache: Il2CppType* → type name info
-// Built during collect_type_info() to avoid calling il2cpp_class_from_type
-// which may trigger class initialization and crash.
-struct TypeNameCacheEntry {
-    std::string name;       // e.g. "Game_Player"
-    bool is_value_type;
-    bool is_enum;
-    std::string enum_base;  // empty if not enum
-};
-static std::map<const Il2CppType*, TypeNameCacheEntry> g_type_name_cache;
 
 std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, bool *is_custom_type,
                                  const Il2CppGenericContext *context) {
@@ -880,39 +887,14 @@ std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, boo
     case IL2CPP_TYPE_VALUETYPE: {
         *is_value_type = true;
         *is_custom_type = true;
-        // Use cache to avoid il2cpp_class_from_type which may crash
         auto it = g_type_name_cache.find(type);
         if (it != g_type_name_cache.end()) {
             if (it->second.is_enum) {
                 *is_value_type = false;
                 *is_custom_type = false;
-                if (!it->second.enum_base.empty()) {
-                    // Parse the enum base type string back to a type
-                    // For simplicity, just return the cached base type name
-                    return it->second.enum_base;
-                }
-                return "int32_t";
+                return !it->second.enum_base.empty() ? it->second.enum_base : "int32_t";
             }
             return it->second.name + "_o";
-        }
-        // Fallback: try il2cpp_class_from_type (may crash on some types)
-        if (il2cpp_class_from_type) {
-            auto klass = il2cpp_class_from_type(type);
-            if (klass) {
-                if (il2cpp_class_is_enum && il2cpp_class_is_enum(klass)) {
-                    *is_value_type = false;
-                    *is_custom_type = false;
-                    auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
-                    if (base_type) {
-                        return get_field_type_name(base_type, is_value_type, is_custom_type, context);
-                    }
-                    return "int32_t";
-                }
-                auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
-                auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
-                std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
-                return fix_name(full.c_str()) + "_o";
-            }
         }
         return "Il2CppObject*";
     }
@@ -932,15 +914,6 @@ std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, boo
         if (it != g_type_name_cache.end()) {
             return it->second.name + "_o*";
         }
-        if (il2cpp_class_from_type) {
-            auto klass = il2cpp_class_from_type(type);
-            if (klass) {
-                auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
-                auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
-                std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
-                return fix_name(full.c_str()) + "_o*";
-            }
-        }
         return "Il2CppObject*";
     }
 
@@ -950,23 +923,6 @@ std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, boo
         auto it = g_type_name_cache.find(type);
         if (it != g_type_name_cache.end()) {
             return it->second.name + "_array*";
-        }
-        if (il2cpp_class_from_type) {
-            auto klass = il2cpp_class_from_type(type);
-            if (klass) {
-                auto elem = il2cpp_class_get_element_class ? il2cpp_class_get_element_class(klass) : nullptr;
-                if (elem) {
-                    auto elem_type = il2cpp_class_get_type ? il2cpp_class_get_type(elem) : nullptr;
-                    if (elem_type && elem_type->type == IL2CPP_TYPE_GENERICINST) {
-                        auto name = build_generic_type_name(elem);
-                        return name + "_array*";
-                    }
-                    auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(elem) : "";
-                    auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(elem) : "";
-                    std::string full = (ns && ns[0]) ? (std::string(ns) + "_" + std::string(cn)) : std::string(cn);
-                    return fix_name(full.c_str()) + "_array*";
-                }
-            }
         }
         return "Il2CppObject_array*";
     }
@@ -982,28 +938,6 @@ std::string get_field_type_name(const Il2CppType *type, bool *is_value_type, boo
             }
             if (it->second.is_value_type) *is_value_type = true;
             return it->second.name + (it->second.is_value_type ? "_o" : "_o*");
-        }
-        if (il2cpp_class_from_type) {
-            auto klass = il2cpp_class_from_type(type);
-            if (klass) {
-                bool is_vt = il2cpp_class_is_valuetype ? il2cpp_class_is_valuetype(klass) : false;
-                bool is_en = il2cpp_class_is_enum ? il2cpp_class_is_enum(klass) : false;
-
-                if (is_en) {
-                    *is_value_type = false;
-                    *is_custom_type = false;
-                    auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
-                    if (base_type) {
-                        return get_field_type_name(base_type, is_value_type, is_custom_type, context);
-                    }
-                    return "int32_t";
-                }
-
-                if (is_vt) { *is_value_type = true; }
-
-                auto name = build_generic_type_name(klass);
-                return is_vt ? name + "_o" : name + "_o*";
-            }
         }
         return "Il2CppObject*";
     }
