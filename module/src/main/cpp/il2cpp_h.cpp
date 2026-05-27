@@ -1181,7 +1181,7 @@ std::vector<StructInfo> collect_type_info() {
 // Pure logic — generate il2cpp.h content (unit-testable)
 // ================================================================
 
-static void generate_il2cpp_h_content(const std::vector<StructInfo> &types, std::ostream &out) {
+void generate_il2cpp_h_content(const std::vector<StructInfo> &types, std::ostream &out) {
 
     // Build a set of all type names for dependency tracking
     std::set<std::string> all_type_names;
