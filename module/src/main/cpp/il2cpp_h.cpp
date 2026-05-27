@@ -985,6 +985,7 @@ std::vector<StructInfo> collect_type_info() {
     // Phase 1: Build type name cache from all loaded classes.
     // This avoids calling il2cpp_class_from_type in get_field_type_name,
     // which may trigger class initialization and crash.
+    LOGI("il2cpp.h: Phase 1 - building type name cache...");
     g_type_name_cache.clear();
     for (size_t i = 0; i < asm_count; i++) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
@@ -996,7 +997,7 @@ std::vector<StructInfo> collect_type_info() {
 
             // Cache the class's Il2CppType → type name mapping
             auto klass_type = il2cpp_class_get_type ? il2cpp_class_get_type(klass) : nullptr;
-            if (klass_type) {
+            if (klass_type && reinterpret_cast<uintptr_t>(klass_type) >= 0x10000) {
                 TypeNameCacheEntry entry;
                 auto ns = il2cpp_class_get_namespace ? il2cpp_class_get_namespace(klass) : "";
                 auto cn = il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "";
@@ -1045,6 +1046,7 @@ std::vector<StructInfo> collect_type_info() {
     }
 
     // Phase 2: Collect struct info for each class
+    LOGI("il2cpp.h: Phase 2 - collecting struct info...");
     for (size_t i = 0; i < asm_count; i++) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         if (!image) continue;
@@ -1114,6 +1116,8 @@ std::vector<StructInfo> collect_type_info() {
 
                     auto ftype = il2cpp_field_get_type(field);
                     if (!ftype) continue;
+                    // Safety: check ftype pointer is in valid range
+                    if (reinterpret_cast<uintptr_t>(ftype) < 0x10000) continue;
 
                     // Skip const (literal) fields
                     if ((ftype->attrs & FIELD_ATTRIBUTE_LITERAL) != 0) continue;
@@ -1380,9 +1384,13 @@ void write_il2cpp_h(const char *outDir, const std::vector<StructInfo> &types, in
         return;
     }
 
+    LOGI("il2cpp.h: writing generic header...");
     f << kGenericHeader;
+    LOGI("il2cpp.h: writing version header...");
     f << get_version_header(version);
+    LOGI("il2cpp.h: generating type definitions for %d types...", (int)types.size());
     f << generate_il2cpp_h_content(types);
-
+    LOGI("il2cpp.h: closing file...");
     f.close();
+    LOGI("il2cpp.h: done!");
 }
