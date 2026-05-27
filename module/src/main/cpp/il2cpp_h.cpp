@@ -759,33 +759,6 @@ static std::map<const Il2CppType*, TypeNameCacheEntry> g_type_name_cache;
 
 static std::string build_generic_type_name(Il2CppClass *klass);
 
-static std::string build_type_base_name_from_type(const Il2CppType *type) {
-    if (!type) return "Unknown";
-
-    // Use cache first — avoids il2cpp_class_from_type which may crash
-    auto it = g_type_name_cache.find(type);
-    if (it != g_type_name_cache.end()) {
-        return it->second.name;
-    }
-
-    // For generic instances, try to build name from generic_class data
-    // WARNING: Accessing type->data.generic_class is dangerous — the pointer
-    // may be invalid. We skip this to avoid crashes.
-    // Instead, we rely on the cache built in collect_type_info() Phase 1.
-
-    // For other types, we can't safely resolve the name without il2cpp_class_from_type.
-    // Return a generic name based on the type enum.
-    switch (type->type) {
-        case IL2CPP_TYPE_VALUETYPE: return "ValueType";
-        case IL2CPP_TYPE_CLASS: return "Class";
-        case IL2CPP_TYPE_OBJECT: return "Il2CppObject";
-        case IL2CPP_TYPE_STRING: return "System_String";
-        case IL2CPP_TYPE_SZARRAY:
-        case IL2CPP_TYPE_ARRAY: return "Array";
-        default: return "Unknown";
-    }
-}
-
 static std::string build_generic_type_name(Il2CppClass *klass) {
     if (!klass) return "Unknown";
 
@@ -1208,8 +1181,7 @@ std::vector<StructInfo> collect_type_info() {
 // Pure logic — generate il2cpp.h content (unit-testable)
 // ================================================================
 
-std::string generate_il2cpp_h_content(const std::vector<StructInfo> &types) {
-    std::ostringstream sb;
+static void generate_il2cpp_h_content(const std::vector<StructInfo> &types, std::ostream &out) {
 
     // Build a set of all type names for dependency tracking
     std::set<std::string> all_type_names;
@@ -1224,15 +1196,15 @@ std::string generate_il2cpp_h_content(const std::vector<StructInfo> &types) {
     // It relies on dependency ordering to ensure types are defined before use.
 
     // Helper: emit a type and its dependencies first
-    std::function<void(const StructInfo &, std::ostringstream &)> emit_struct;
-    emit_struct = [&](const StructInfo &info, std::ostringstream &out) {
+    std::function<void(const StructInfo &, std::ostream &)> emit_struct;
+    emit_struct = [&](const StructInfo &info, std::ostream &os) {
         if (emitted.count(info.type_name)) return;
 
         // Emit parent first if it exists and is in our type set
         if (!info.parent_name.empty() && all_type_names.count(info.parent_name)) {
             for (const auto &t : types) {
                 if (t.type_name == info.parent_name) {
-                    emit_struct(t, out);
+                    emit_struct(t, os);
                     break;
                 }
             }
@@ -1248,7 +1220,7 @@ std::string generate_il2cpp_h_content(const std::vector<StructInfo> &types) {
                 if (all_type_names.count(dep_name) && !emitted.count(dep_name)) {
                     for (const auto &t : types) {
                         if (t.type_name == dep_name) {
-                            emit_struct(t, out);
+                            emit_struct(t, os);
                             break;
                         }
                     }
@@ -1263,83 +1235,83 @@ std::string generate_il2cpp_h_content(const std::vector<StructInfo> &types) {
         }
 
         // --- _Fields struct ---
-        out << "struct " << info.type_name << "_Fields";
+        os << "struct " << info.type_name << "_Fields";
         if (!info.parent_name.empty() && all_type_names.count(info.parent_name)) {
-            out << " : " << info.parent_name << "_Fields";
+            os << " : " << info.parent_name << "_Fields";
         }
-        out << " {\n";
+        os << " {\n";
         for (const auto &f : info.fields) {
             if (f.is_custom_type) {
-                out << "\tstruct " << f.type_name << " " << f.field_name << ";\n";
+                os << "\tstruct " << f.type_name << " " << f.field_name << ";\n";
             } else {
-                out << "\t" << f.type_name << " " << f.field_name << ";\n";
+                os << "\t" << f.type_name << " " << f.field_name << ";\n";
             }
         }
-        out << "};\n\n";
+        os << "};\n\n";
 
         // --- _StaticFields struct (if has static fields) ---
         if (info.has_static_fields()) {
-            out << "struct " << info.type_name << "_StaticFields {\n";
+            os << "struct " << info.type_name << "_StaticFields {\n";
             for (const auto &f : info.static_fields) {
                 if (f.is_custom_type) {
-                    out << "\tstruct " << f.type_name << " " << f.field_name << ";\n";
+                    os << "\tstruct " << f.type_name << " " << f.field_name << ";\n";
                 } else {
-                    out << "\t" << f.type_name << " " << f.field_name << ";\n";
+                    os << "\t" << f.type_name << " " << f.field_name << ";\n";
                 }
             }
-            out << "};\n\n";
+            os << "};\n\n";
         }
 
         // --- _VTable struct (if has vtable methods) ---
         // Desktop Il2CppDumper generates a separate _VTable struct
         if (info.has_vtable()) {
-            out << "struct " << info.type_name << "_VTable {\n";
+            os << "struct " << info.type_name << "_VTable {\n";
             for (size_t vi = 0; vi < info.vtable_methods.size(); vi++) {
                 const auto &vm = info.vtable_methods[vi];
                 std::string method_name = fix_name(vm.name);
-                out << "\tVirtualInvokeData _" << vi << "_" << method_name << ";\n";
+                os << "\tVirtualInvokeData _" << vi << "_" << method_name << ";\n";
             }
-            out << "};\n\n";
+            os << "};\n\n";
         }
 
         // --- _c struct (class metadata) ---
-        out << "struct " << info.type_name << "_c {\n";
-        out << "\tIl2CppClass_1 _1;\n";
+        os << "struct " << info.type_name << "_c {\n";
+        os << "\tIl2CppClass_1 _1;\n";
         if (info.has_static_fields()) {
-            out << "\tstruct " << info.type_name << "_StaticFields* static_fields;\n";
+            os << "\tstruct " << info.type_name << "_StaticFields* static_fields;\n";
         } else {
-            out << "\tvoid* static_fields;\n";
+            os << "\tvoid* static_fields;\n";
         }
         if (!info.rgctx_entries.empty()) {
-            out << "\t" << info.type_name << "_RGCTXs* rgctx_data;\n";
+            os << "\t" << info.type_name << "_RGCTXs* rgctx_data;\n";
         } else {
-            out << "\tIl2CppRGCTXData* rgctx_data;\n";
+            os << "\tIl2CppRGCTXData* rgctx_data;\n";
         }
-        out << "\tIl2CppClass_2 _2;\n";
+        os << "\tIl2CppClass_2 _2;\n";
         // VTable: desktop uses separate _VTable struct + TypeName_VTable vtable;
         // or VirtualInvokeData vtable[32] when no vtable methods
         if (info.has_vtable()) {
-            out << "\t" << info.type_name << "_VTable vtable;\n";
+            os << "\t" << info.type_name << "_VTable vtable;\n";
         } else {
-            out << "\tVirtualInvokeData vtable[32];\n";
+            os << "\tVirtualInvokeData vtable[32];\n";
         }
-        out << "};\n\n";
+        os << "};\n\n";
 
         // --- _o struct (object instance) ---
-        out << "struct " << info.type_name << "_o {\n";
+        os << "struct " << info.type_name << "_o {\n";
         if (!info.is_value_type) {
-            out << "\t" << info.type_name << "_c *klass;\n";
-            out << "\tvoid *monitor;\n";
+            os << "\t" << info.type_name << "_c *klass;\n";
+            os << "\tvoid *monitor;\n";
         }
-        out << "\t" << info.type_name << "_Fields fields;\n";
-        out << "};\n\n";
+        os << "\t" << info.type_name << "_Fields fields;\n";
+        os << "};\n\n";
 
         emitted.insert(info.type_name);
     };
 
     // Emit all type structs in dependency order
     for (const auto &t : types) {
-        emit_struct(t, sb);
+        emit_struct(t, out);
     }
 
     // --- Array type structs ---
@@ -1350,24 +1322,22 @@ std::string generate_il2cpp_h_content(const std::vector<StructInfo> &types) {
         if (emitted_arrays.count(arr_name)) continue;
         emitted_arrays.insert(arr_name);
 
-        sb << "struct " << arr_name << " {\n";
-        sb << "\tIl2CppObject obj;\n";
-        sb << "\tIl2CppArrayBounds *bounds;\n";
-        sb << "\til2cpp_array_size_t max_length;\n";
+        out << "struct " << arr_name << " {\n";
+        out << "\tIl2CppObject obj;\n";
+        out << "\tIl2CppArrayBounds *bounds;\n";
+        out << "\til2cpp_array_size_t max_length;\n";
         if (t.is_value_type) {
-            sb << "\t" << t.type_name << "_o m_Items[65535];\n";
+            out << "\t" << t.type_name << "_o m_Items[65535];\n";
         } else {
-            sb << "\t" << t.type_name << "_o* m_Items[65535];\n";
+            out << "\t" << t.type_name << "_o* m_Items[65535];\n";
         }
-        sb << "};\n\n";
+        out << "};\n\n";
     }
 
     // TODO: MethodInfo struct generation for generic method instances
     // The desktop version generates MethodInfo_{RVA:X} structs for generic methods.
     // This requires knowing the exact MethodInfo layout for each version,
     // which is very complex and version-dependent. Skip for now.
-
-    return sb.str();
 }
 
 // ================================================================
@@ -1389,7 +1359,7 @@ void write_il2cpp_h(const char *outDir, const std::vector<StructInfo> &types, in
     LOGI("il2cpp.h: writing version header...");
     f << get_version_header(version);
     LOGI("il2cpp.h: generating type definitions for %d types...", (int)types.size());
-    f << generate_il2cpp_h_content(types);
+    generate_il2cpp_h_content(types, f);
     LOGI("il2cpp.h: closing file...");
     f.close();
     LOGI("il2cpp.h: done!");

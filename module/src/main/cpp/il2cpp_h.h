@@ -11,6 +11,7 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <ostream>
 
 #include "il2cpp-class.h"
 
@@ -71,9 +72,9 @@ void write_il2cpp_h(const char *outDir, const std::vector<StructInfo> &types, in
 // Pure logic — unit-testable on host
 // ----------------------------------------------------------------
 
-// Generate the complete il2cpp.h content as a string.
-// This is the core logic that can be tested without file I/O.
-std::string generate_il2cpp_h_content(const std::vector<StructInfo> &types);
+// Generate the il2cpp.h content by writing directly to an ostream.
+// This avoids building a huge string in memory (which can cause OOM with many types).
+void generate_il2cpp_h_content(const std::vector<StructInfo> &types, std::ostream &out);
 
 // Get the C type string for an Il2CppType at runtime.
 // Delegates to parse_type() but also handles field-specific logic.

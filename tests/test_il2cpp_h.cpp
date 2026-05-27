@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <sstream>
 #include <vector>
 
 #include "il2cpp_h.h"
@@ -15,7 +16,9 @@ int test_generate_il2cpp_h_empty() {
     int fail = 0;
 
     std::vector<StructInfo> types;
-    auto content = generate_il2cpp_h_content(types);
+    std::ostringstream oss;
+    generate_il2cpp_h_content(types, oss);
+    auto content = oss.str();
 
     // Empty types should produce empty content (desktop Il2CppDumper behavior)
     if (!content.empty()) {
@@ -54,7 +57,9 @@ int test_generate_il2cpp_h_simple_class() {
 
     types.push_back(player);
 
-    auto content = generate_il2cpp_h_content(types);
+    std::ostringstream oss;
+    generate_il2cpp_h_content(types, oss);
+    auto content = oss.str();
 
     // Check _Fields struct
     if (content.find("struct Game_Player_Fields {") == std::string::npos) {
@@ -142,7 +147,9 @@ int test_generate_il2cpp_h_value_type() {
 
     types.push_back(vec3);
 
-    auto content = generate_il2cpp_h_content(types);
+    std::ostringstream oss;
+    generate_il2cpp_h_content(types, oss);
+    auto content = oss.str();
 
     // Value type _o should NOT have klass and monitor
     if (content.find("UnityEngine_Vector3_c *klass;") != std::string::npos) {
@@ -184,7 +191,9 @@ int test_generate_il2cpp_h_enum() {
 
     types.push_back(color);
 
-    auto content = generate_il2cpp_h_content(types);
+    std::ostringstream oss;
+    generate_il2cpp_h_content(types, oss);
+    auto content = oss.str();
 
     // Enum should NOT have _Fields struct
     if (content.find("struct Game_Color_Fields {") != std::string::npos) {
@@ -242,7 +251,9 @@ int test_generate_il2cpp_h_inheritance() {
 
     types.push_back(child);
 
-    auto content = generate_il2cpp_h_content(types);
+    std::ostringstream oss;
+    generate_il2cpp_h_content(types, oss);
+    auto content = oss.str();
 
     // Check inheritance in _Fields
     if (content.find("struct Game_Player_Fields : Game_Entity_Fields {") == std::string::npos) {
@@ -291,7 +302,9 @@ int test_generate_il2cpp_h_static_fields() {
 
     types.push_back(mgr);
 
-    auto content = generate_il2cpp_h_content(types);
+    std::ostringstream oss;
+    generate_il2cpp_h_content(types, oss);
+    auto content = oss.str();
 
     // Check _StaticFields struct
     if (content.find("struct Game_Manager_StaticFields {") == std::string::npos) {
