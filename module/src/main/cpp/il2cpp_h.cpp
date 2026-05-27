@@ -769,22 +769,9 @@ static std::string build_type_base_name_from_type(const Il2CppType *type) {
     }
 
     // For generic instances, try to build name from generic_class data
-    if (type->type == IL2CPP_TYPE_GENERICINST && type->data.generic_class) {
-        auto gc = reinterpret_cast<const Il2CppGenericClass*>(type->data.generic_class);
-        if (gc->context.class_inst) {
-            // Build name from generic arguments
-            std::string result;
-            auto inst = gc->context.class_inst;
-            for (uint32_t i = 0; i < inst->length; i++) {
-                if (inst->vector[i]) {
-                    auto arg_name = build_type_base_name_from_type(inst->vector[i]);
-                    if (i == 0) result = arg_name;
-                    else result += "_" + arg_name;
-                }
-            }
-            return result;
-        }
-    }
+    // WARNING: Accessing type->data.generic_class is dangerous — the pointer
+    // may be invalid. We skip this to avoid crashes.
+    // Instead, we rely on the cache built in collect_type_info() Phase 1.
 
     // For other types, we can't safely resolve the name without il2cpp_class_from_type.
     // Return a generic name based on the type enum.
@@ -819,20 +806,14 @@ static std::string build_generic_type_name(Il2CppClass *klass) {
         full = base_name;
     }
 
-    // Get generic arguments from the type's generic_class->context
-    auto type = il2cpp_class_get_type ? il2cpp_class_get_type(klass) : nullptr;
-    if (type && type->type == IL2CPP_TYPE_GENERICINST && type->data.generic_class) {
-        auto gc = reinterpret_cast<const Il2CppGenericClass*>(type->data.generic_class);
-        if (gc->context.class_inst) {
-            auto inst = gc->context.class_inst;
-            for (uint32_t i = 0; i < inst->length; i++) {
-                if (inst->vector[i]) {
-                    auto arg_name = build_type_base_name_from_type(inst->vector[i]);
-                    full += "_" + arg_name;
-                }
-            }
-        }
-    }
+    // Try to get generic argument names from the type's generic_class->context.
+    // WARNING: Accessing type->data.generic_class is dangerous — the pointer
+    // may be invalid and cause crashes. We skip direct memory access.
+    // Instead, we rely on the cache built in collect_type_info() Phase 1,
+    // which already resolved generic type names using safe API calls.
+    // For types not in the cache, we just use the base name without generic args.
+    // This means generic instance types will appear as e.g. "System_Collections_Generic_List"
+    // instead of "System_Collections_Generic_List_System_String", but this is safe.
 
     return fix_name(full.c_str());
 }
@@ -1032,9 +1013,22 @@ std::vector<StructInfo> collect_type_info() {
                 // For enums, cache the base type name
                 if (entry.is_enum) {
                     auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
-                    if (base_type) {
-                        bool dummy1, dummy2;
-                        entry.enum_base = get_field_type_name(base_type, &dummy1, &dummy2, nullptr);
+                    if (base_type && reinterpret_cast<uintptr_t>(base_type) > 0x10000) {
+                        // base_type is a pointer to Il2CppType within the class,
+                        // so it should be safe to read its type field
+                        switch (base_type->type) {
+                            case IL2CPP_TYPE_BOOLEAN: entry.enum_base = "bool"; break;
+                            case IL2CPP_TYPE_CHAR: entry.enum_base = "uint16_t"; break;
+                            case IL2CPP_TYPE_I1: entry.enum_base = "int8_t"; break;
+                            case IL2CPP_TYPE_U1: entry.enum_base = "uint8_t"; break;
+                            case IL2CPP_TYPE_I2: entry.enum_base = "int16_t"; break;
+                            case IL2CPP_TYPE_U2: entry.enum_base = "uint16_t"; break;
+                            case IL2CPP_TYPE_I4: entry.enum_base = "int32_t"; break;
+                            case IL2CPP_TYPE_U4: entry.enum_base = "uint32_t"; break;
+                            case IL2CPP_TYPE_I8: entry.enum_base = "int64_t"; break;
+                            case IL2CPP_TYPE_U8: entry.enum_base = "uint64_t"; break;
+                            default: entry.enum_base = "int32_t"; break;
+                        }
                     }
                 }
 
@@ -1104,11 +1098,10 @@ std::vector<StructInfo> collect_type_info() {
             }
 
             // Get generic context for field type resolution (Fix #16)
+            // WARNING: Accessing type->data.generic_class is dangerous.
+            // We skip it to avoid crashes. Generic type parameter substitution
+            // won't work for field types, but this is acceptable.
             const Il2CppGenericContext *generic_context = nullptr;
-            if (klass_type && klass_type->type == IL2CPP_TYPE_GENERICINST && klass_type->data.generic_class) {
-                auto gc = reinterpret_cast<const Il2CppGenericClass*>(klass_type->data.generic_class);
-                generic_context = &gc->context;
-            }
 
             // Collect instance and static fields
             if (il2cpp_class_get_fields && il2cpp_field_get_name && il2cpp_field_get_type) {
