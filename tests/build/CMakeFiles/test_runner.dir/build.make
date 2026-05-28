@@ -73,155 +73,155 @@ CMakeFiles/test_runner.dir/test_runner.cpp.o: CMakeFiles/test_runner.dir/flags.m
 CMakeFiles/test_runner.dir/test_runner.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_runner.cpp
 CMakeFiles/test_runner.dir/test_runner.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/test_runner.dir/test_runner.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_runner.cpp.o -MF CMakeFiles/test_runner.dir/test_runner.cpp.o.d -o CMakeFiles/test_runner.dir/test_runner.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_runner.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_runner.cpp.o -MF CMakeFiles/test_runner.dir/test_runner.cpp.o.d -o CMakeFiles/test_runner.dir/test_runner.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_runner.cpp
 
 CMakeFiles/test_runner.dir/test_runner.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/test_runner.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_runner.cpp > CMakeFiles/test_runner.dir/test_runner.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_runner.cpp > CMakeFiles/test_runner.dir/test_runner.cpp.i
 
 CMakeFiles/test_runner.dir/test_runner.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/test_runner.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_runner.cpp -o CMakeFiles/test_runner.dir/test_runner.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_runner.cpp -o CMakeFiles/test_runner.dir/test_runner.cpp.s
 
 CMakeFiles/test_runner.dir/test_fix_name.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/test_fix_name.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_fix_name.cpp
 CMakeFiles/test_runner.dir/test_fix_name.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/test_runner.dir/test_fix_name.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_fix_name.cpp.o -MF CMakeFiles/test_runner.dir/test_fix_name.cpp.o.d -o CMakeFiles/test_runner.dir/test_fix_name.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_fix_name.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_fix_name.cpp.o -MF CMakeFiles/test_runner.dir/test_fix_name.cpp.o.d -o CMakeFiles/test_runner.dir/test_fix_name.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_fix_name.cpp
 
 CMakeFiles/test_runner.dir/test_fix_name.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/test_fix_name.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_fix_name.cpp > CMakeFiles/test_runner.dir/test_fix_name.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_fix_name.cpp > CMakeFiles/test_runner.dir/test_fix_name.cpp.i
 
 CMakeFiles/test_runner.dir/test_fix_name.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/test_fix_name.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_fix_name.cpp -o CMakeFiles/test_runner.dir/test_fix_name.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_fix_name.cpp -o CMakeFiles/test_runner.dir/test_fix_name.cpp.s
 
 CMakeFiles/test_runner.dir/test_escape_json.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/test_escape_json.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_escape_json.cpp
 CMakeFiles/test_runner.dir/test_escape_json.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/test_runner.dir/test_escape_json.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_escape_json.cpp.o -MF CMakeFiles/test_runner.dir/test_escape_json.cpp.o.d -o CMakeFiles/test_runner.dir/test_escape_json.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_escape_json.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_escape_json.cpp.o -MF CMakeFiles/test_runner.dir/test_escape_json.cpp.o.d -o CMakeFiles/test_runner.dir/test_escape_json.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_escape_json.cpp
 
 CMakeFiles/test_runner.dir/test_escape_json.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/test_escape_json.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_escape_json.cpp > CMakeFiles/test_runner.dir/test_escape_json.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_escape_json.cpp > CMakeFiles/test_runner.dir/test_escape_json.cpp.i
 
 CMakeFiles/test_runner.dir/test_escape_json.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/test_escape_json.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_escape_json.cpp -o CMakeFiles/test_runner.dir/test_escape_json.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_escape_json.cpp -o CMakeFiles/test_runner.dir/test_escape_json.cpp.s
 
 CMakeFiles/test_runner.dir/test_type_signature.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/test_type_signature.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_type_signature.cpp
 CMakeFiles/test_runner.dir/test_type_signature.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/test_runner.dir/test_type_signature.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_type_signature.cpp.o -MF CMakeFiles/test_runner.dir/test_type_signature.cpp.o.d -o CMakeFiles/test_runner.dir/test_type_signature.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_type_signature.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_type_signature.cpp.o -MF CMakeFiles/test_runner.dir/test_type_signature.cpp.o.d -o CMakeFiles/test_runner.dir/test_type_signature.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_type_signature.cpp
 
 CMakeFiles/test_runner.dir/test_type_signature.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/test_type_signature.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_type_signature.cpp > CMakeFiles/test_runner.dir/test_type_signature.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_type_signature.cpp > CMakeFiles/test_runner.dir/test_type_signature.cpp.i
 
 CMakeFiles/test_runner.dir/test_type_signature.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/test_type_signature.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_type_signature.cpp -o CMakeFiles/test_runner.dir/test_type_signature.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_type_signature.cpp -o CMakeFiles/test_runner.dir/test_type_signature.cpp.s
 
 CMakeFiles/test_runner.dir/test_json_output.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/test_json_output.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_json_output.cpp
 CMakeFiles/test_runner.dir/test_json_output.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/test_runner.dir/test_json_output.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_json_output.cpp.o -MF CMakeFiles/test_runner.dir/test_json_output.cpp.o.d -o CMakeFiles/test_runner.dir/test_json_output.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_json_output.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_json_output.cpp.o -MF CMakeFiles/test_runner.dir/test_json_output.cpp.o.d -o CMakeFiles/test_runner.dir/test_json_output.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_json_output.cpp
 
 CMakeFiles/test_runner.dir/test_json_output.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/test_json_output.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_json_output.cpp > CMakeFiles/test_runner.dir/test_json_output.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_json_output.cpp > CMakeFiles/test_runner.dir/test_json_output.cpp.i
 
 CMakeFiles/test_runner.dir/test_json_output.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/test_json_output.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_json_output.cpp -o CMakeFiles/test_runner.dir/test_json_output.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_json_output.cpp -o CMakeFiles/test_runner.dir/test_json_output.cpp.s
 
 CMakeFiles/test_runner.dir/test_extract_strings.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/test_extract_strings.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_extract_strings.cpp
 CMakeFiles/test_runner.dir/test_extract_strings.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/test_runner.dir/test_extract_strings.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_extract_strings.cpp.o -MF CMakeFiles/test_runner.dir/test_extract_strings.cpp.o.d -o CMakeFiles/test_runner.dir/test_extract_strings.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_extract_strings.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_extract_strings.cpp.o -MF CMakeFiles/test_runner.dir/test_extract_strings.cpp.o.d -o CMakeFiles/test_runner.dir/test_extract_strings.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_extract_strings.cpp
 
 CMakeFiles/test_runner.dir/test_extract_strings.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/test_extract_strings.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_extract_strings.cpp > CMakeFiles/test_runner.dir/test_extract_strings.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_extract_strings.cpp > CMakeFiles/test_runner.dir/test_extract_strings.cpp.i
 
 CMakeFiles/test_runner.dir/test_extract_strings.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/test_extract_strings.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_extract_strings.cpp -o CMakeFiles/test_runner.dir/test_extract_strings.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_extract_strings.cpp -o CMakeFiles/test_runner.dir/test_extract_strings.cpp.s
 
 CMakeFiles/test_runner.dir/test_metadata.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/test_metadata.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_metadata.cpp
 CMakeFiles/test_runner.dir/test_metadata.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/test_runner.dir/test_metadata.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_metadata.cpp.o -MF CMakeFiles/test_runner.dir/test_metadata.cpp.o.d -o CMakeFiles/test_runner.dir/test_metadata.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_metadata.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_metadata.cpp.o -MF CMakeFiles/test_runner.dir/test_metadata.cpp.o.d -o CMakeFiles/test_runner.dir/test_metadata.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_metadata.cpp
 
 CMakeFiles/test_runner.dir/test_metadata.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/test_metadata.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_metadata.cpp > CMakeFiles/test_runner.dir/test_metadata.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_metadata.cpp > CMakeFiles/test_runner.dir/test_metadata.cpp.i
 
 CMakeFiles/test_runner.dir/test_metadata.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/test_metadata.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_metadata.cpp -o CMakeFiles/test_runner.dir/test_metadata.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_metadata.cpp -o CMakeFiles/test_runner.dir/test_metadata.cpp.s
 
 CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_il2cpp_h.cpp
 CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o -MF CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o.d -o CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_il2cpp_h.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o -MF CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o.d -o CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_il2cpp_h.cpp
 
 CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_il2cpp_h.cpp > CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_il2cpp_h.cpp > CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.i
 
 CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_il2cpp_h.cpp -o CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/test_il2cpp_h.cpp -o CMakeFiles/test_runner.dir/test_il2cpp_h.cpp.s
 
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o -MF CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o.d -o CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o -MF CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o.d -o CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp
 
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp > CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp > CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.i
 
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp -o CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp -o CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/script_json.cpp.s
 
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o -MF CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o.d -o CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o -MF CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o.d -o CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp
 
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp > CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp > CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.i
 
 CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp -o CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp -o CMakeFiles/test_runner.dir/mnt/d/Github/Zygisk-Il2CppDumper/module/src/main/cpp/il2cpp_h.cpp.s
 
 CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o: CMakeFiles/test_runner.dir/flags.make
 CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o: /mnt/d/Github/Zygisk-Il2CppDumper/tests/stubs/stub_globals.cpp
 CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o: CMakeFiles/test_runner.dir/compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/d/Github/Zygisk-Il2CppDumper/tests/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o -MF CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o.d -o CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/stubs/stub_globals.cpp
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o -MF CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o.d -o CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.o -c /mnt/d/Github/Zygisk-Il2CppDumper/tests/stubs/stub_globals.cpp
 
 CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/stubs/stub_globals.cpp > CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/d/Github/Zygisk-Il2CppDumper/tests/stubs/stub_globals.cpp > CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.i
 
 CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/stubs/stub_globals.cpp -o CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/d/Github/Zygisk-Il2CppDumper/tests/stubs/stub_globals.cpp -o CMakeFiles/test_runner.dir/stubs/stub_globals.cpp.s
 
 # Object files for target test_runner
 test_runner_OBJECTS = \
