@@ -26,7 +26,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
-#include <functional>
 #include <sstream>
 #include <set>
 #include <map>
@@ -1183,135 +1182,160 @@ std::vector<StructInfo> collect_type_info() {
 
 void generate_il2cpp_h_content(const std::vector<StructInfo> &types, std::ostream &out) {
 
-    // Build a set of all type names for dependency tracking
+    // Build a map from type_name to index for O(1) lookup
+    std::map<std::string, size_t> name_to_idx;
+    for (size_t i = 0; i < types.size(); i++) {
+        name_to_idx[types[i].type_name] = i;
+    }
+
+    // Build a set of all type names for dependency checks
     std::set<std::string> all_type_names;
     for (const auto &t : types) {
         all_type_names.insert(t.type_name);
     }
 
-    // Track which types have been emitted (for dependency ordering)
-    std::set<std::string> emitted;
+    // Iterative topological sort using explicit stack (no recursion)
+    // This avoids stack overflow and std::function overhead on Android
+    std::vector<size_t> order;   // emission order (indices)
+    std::set<size_t> visited;    // fully processed
+    std::set<size_t> visiting;   // currently in stack (cycle detection)
 
-    // Desktop Il2CppDumper does NOT generate per-type forward declarations.
-    // It relies on dependency ordering to ensure types are defined before use.
+    for (size_t i = 0; i < types.size(); i++) {
+        if (visited.count(i)) continue;
 
-    // Helper: emit a type and its dependencies first
-    std::function<void(const StructInfo &, std::ostream &)> emit_struct;
-    emit_struct = [&](const StructInfo &info, std::ostream &os) {
-        if (emitted.count(info.type_name)) return;
+        // stack entries: (index, processed_flag)
+        // processed_flag=true means all dependencies have been added, ready to emit
+        std::vector<std::pair<size_t, bool>> stack;
+        stack.push_back({i, false});
 
-        // Emit parent first if it exists and is in our type set
-        if (!info.parent_name.empty() && all_type_names.count(info.parent_name)) {
-            for (const auto &t : types) {
-                if (t.type_name == info.parent_name) {
-                    emit_struct(t, os);
-                    break;
+        while (!stack.empty()) {
+            auto [idx, processed] = stack.back();
+            stack.pop_back();
+
+            if (processed) {
+                if (!visited.count(idx)) {
+                    order.push_back(idx);
+                    visited.insert(idx);
+                    visiting.erase(idx);
+                }
+                continue;
+            }
+
+            if (visited.count(idx)) continue;
+            if (visiting.count(idx)) continue;  // cycle detected, skip
+
+            visiting.insert(idx);
+            stack.push_back({idx, true});  // will be added to order after dependencies
+
+            const auto &t = types[idx];
+
+            // Add parent dependency
+            if (!t.parent_name.empty() && all_type_names.count(t.parent_name)) {
+                auto it = name_to_idx.find(t.parent_name);
+                if (it != name_to_idx.end() && !visited.count(it->second)) {
+                    stack.push_back({it->second, false});
                 }
             }
-        }
 
-        // Emit field dependencies (value types that are embedded)
-        for (const auto &f : info.fields) {
-            if (f.is_value_type && f.is_custom_type) {
-                std::string dep_name = f.type_name;
-                if (dep_name.size() > 2 && dep_name.substr(dep_name.size() - 2) == "_o") {
-                    dep_name = dep_name.substr(0, dep_name.size() - 2);
-                }
-                if (all_type_names.count(dep_name) && !emitted.count(dep_name)) {
-                    for (const auto &t : types) {
-                        if (t.type_name == dep_name) {
-                            emit_struct(t, os);
-                            break;
-                        }
+            // Add field dependencies (value types that are embedded)
+            for (const auto &f : t.fields) {
+                if (f.is_value_type && f.is_custom_type) {
+                    std::string dep_name = f.type_name;
+                    if (dep_name.size() > 2 && dep_name.substr(dep_name.size() - 2) == "_o") {
+                        dep_name = dep_name.substr(0, dep_name.size() - 2);
+                    }
+                    auto it = name_to_idx.find(dep_name);
+                    if (it != name_to_idx.end() && !visited.count(it->second)) {
+                        stack.push_back({it->second, false});
                     }
                 }
             }
         }
+    }
+
+    // Emit type structs in topological order
+    int emitted_count = 0;
+    for (size_t idx : order) {
+        const auto &info = types[idx];
 
         // Skip enum types — they use their underlying type directly
-        if (info.is_enum) {
-            emitted.insert(info.type_name);
-            return;
-        }
+        if (info.is_enum) continue;
 
         // --- _Fields struct ---
-        os << "struct " << info.type_name << "_Fields";
+        out << "struct " << info.type_name << "_Fields";
         if (!info.parent_name.empty() && all_type_names.count(info.parent_name)) {
-            os << " : " << info.parent_name << "_Fields";
+            out << " : " << info.parent_name << "_Fields";
         }
-        os << " {\n";
+        out << " {\n";
         for (const auto &f : info.fields) {
             if (f.is_custom_type) {
-                os << "\tstruct " << f.type_name << " " << f.field_name << ";\n";
+                out << "\tstruct " << f.type_name << " " << f.field_name << ";\n";
             } else {
-                os << "\t" << f.type_name << " " << f.field_name << ";\n";
+                out << "\t" << f.type_name << " " << f.field_name << ";\n";
             }
         }
-        os << "};\n\n";
+        out << "};\n\n";
 
         // --- _StaticFields struct (if has static fields) ---
         if (info.has_static_fields()) {
-            os << "struct " << info.type_name << "_StaticFields {\n";
+            out << "struct " << info.type_name << "_StaticFields {\n";
             for (const auto &f : info.static_fields) {
                 if (f.is_custom_type) {
-                    os << "\tstruct " << f.type_name << " " << f.field_name << ";\n";
+                    out << "\tstruct " << f.type_name << " " << f.field_name << ";\n";
                 } else {
-                    os << "\t" << f.type_name << " " << f.field_name << ";\n";
+                    out << "\t" << f.type_name << " " << f.field_name << ";\n";
                 }
             }
-            os << "};\n\n";
+            out << "};\n\n";
         }
 
         // --- _VTable struct (if has vtable methods) ---
-        // Desktop Il2CppDumper generates a separate _VTable struct
         if (info.has_vtable()) {
-            os << "struct " << info.type_name << "_VTable {\n";
+            out << "struct " << info.type_name << "_VTable {\n";
             for (size_t vi = 0; vi < info.vtable_methods.size(); vi++) {
                 const auto &vm = info.vtable_methods[vi];
                 std::string method_name = fix_name(vm.name);
-                os << "\tVirtualInvokeData _" << vi << "_" << method_name << ";\n";
+                out << "\tVirtualInvokeData _" << vi << "_" << method_name << ";\n";
             }
-            os << "};\n\n";
+            out << "};\n\n";
         }
 
         // --- _c struct (class metadata) ---
-        os << "struct " << info.type_name << "_c {\n";
-        os << "\tIl2CppClass_1 _1;\n";
+        out << "struct " << info.type_name << "_c {\n";
+        out << "\tIl2CppClass_1 _1;\n";
         if (info.has_static_fields()) {
-            os << "\tstruct " << info.type_name << "_StaticFields* static_fields;\n";
+            out << "\tstruct " << info.type_name << "_StaticFields* static_fields;\n";
         } else {
-            os << "\tvoid* static_fields;\n";
+            out << "\tvoid* static_fields;\n";
         }
         if (!info.rgctx_entries.empty()) {
-            os << "\t" << info.type_name << "_RGCTXs* rgctx_data;\n";
+            out << "\t" << info.type_name << "_RGCTXs* rgctx_data;\n";
         } else {
-            os << "\tIl2CppRGCTXData* rgctx_data;\n";
+            out << "\tIl2CppRGCTXData* rgctx_data;\n";
         }
-        os << "\tIl2CppClass_2 _2;\n";
-        // VTable: desktop uses separate _VTable struct + TypeName_VTable vtable;
-        // or VirtualInvokeData vtable[32] when no vtable methods
+        out << "\tIl2CppClass_2 _2;\n";
         if (info.has_vtable()) {
-            os << "\t" << info.type_name << "_VTable vtable;\n";
+            out << "\t" << info.type_name << "_VTable vtable;\n";
         } else {
-            os << "\tVirtualInvokeData vtable[32];\n";
+            out << "\tVirtualInvokeData vtable[32];\n";
         }
-        os << "};\n\n";
+        out << "};\n\n";
 
         // --- _o struct (object instance) ---
-        os << "struct " << info.type_name << "_o {\n";
+        out << "struct " << info.type_name << "_o {\n";
         if (!info.is_value_type) {
-            os << "\t" << info.type_name << "_c *klass;\n";
-            os << "\tvoid *monitor;\n";
+            out << "\t" << info.type_name << "_c *klass;\n";
+            out << "\tvoid *monitor;\n";
         }
-        os << "\t" << info.type_name << "_Fields fields;\n";
-        os << "};\n\n";
+        out << "\t" << info.type_name << "_Fields fields;\n";
+        out << "};\n\n";
 
-        emitted.insert(info.type_name);
-    };
-
-    // Emit all type structs in dependency order
-    for (const auto &t : types) {
-        emit_struct(t, out);
+        emitted_count++;
+        // Flush to disk every 1000 types to reduce memory pressure
+        if (emitted_count % 1000 == 0) {
+            out.flush();
+            LOGI("il2cpp.h: emitted %d/%d types...", emitted_count, (int)types.size());
+        }
     }
 
     // --- Array type structs ---
