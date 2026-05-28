@@ -12,3 +12,5 @@
 /out
 .externalNativeBuild
 .cxx
+tests/build
+.trae
