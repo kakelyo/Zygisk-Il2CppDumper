@@ -297,8 +297,8 @@ static bool hookMethod(const HookEntry &entry) {
 
         // 保存原始 methodPointer
         *entry.orig_fn = (void *)method->methodPointer;
-        // 替换为 hook 函数
-        method->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
+        // 替换为 hook 函数 (const_cast 因为 il2cpp API 返回 const 指针)
+        const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
 
         LOGH("[OK] %s.%s.%s @ %p -> %p",
              entry.ns, entry.cls, entry.method, *entry.orig_fn, entry.fake_fn);
