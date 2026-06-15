@@ -7,6 +7,11 @@
 // 原理: 通过 il2cpp API 获取 MethodInfo，替换 methodPointer 实现 hook
 //       不依赖任何 inline hook 框架（Dobby 等），更稳定
 //
+// 多策略查找: 1. namespace+className 精确匹配
+//            2. className only 匹配（忽略 namespace）
+//            3. RVA 匹配（最可靠，直接用 il2cpp_base + RVA 计算地址）
+//            4. 诊断日志：输出所有包含关键词的类名
+//
 
 #include "hook_trace.h"
 #include "il2cpp_dump.h"
@@ -24,8 +29,13 @@
 extern Il2CppDomain *(*il2cpp_domain_get)();
 extern const Il2CppAssembly **(*il2cpp_domain_get_assemblies)(const Il2CppDomain *domain, size_t *size);
 extern Il2CppImage *(*il2cpp_assembly_get_image)(const Il2CppAssembly *assembly);
-extern Il2CppClass *(*il2cpp_class_from_name)(const Il2CppImage *image, const char *namespaze, const char *name);
+extern const char *(*il2cpp_image_get_name)(const Il2CppImage *image);
+extern size_t (*il2cpp_image_get_class_count)(const Il2CppImage *image);
+extern const Il2CppClass *(*il2cpp_image_get_class)(const Il2CppImage *image, size_t index);
 extern const MethodInfo *(*il2cpp_class_get_method_from_name)(Il2CppClass *klass, const char *name, int argsCount);
+extern const char *(*il2cpp_class_get_name)(Il2CppClass *klass);
+extern const char *(*il2cpp_class_get_namespace)(Il2CppClass *klass);
+extern const MethodInfo *(*il2cpp_class_get_methods)(Il2CppClass *klass, void **iter);
 
 // ==================== 安全读取工具 ====================
 
@@ -255,57 +265,221 @@ static void hook_H7(void *self, int32_t result, void *msg) {
          result, cmd, cmd);
 }
 
-// ==================== methodPointer 替换工具 ====================
+// ==================== 多策略 Hook 注册 ====================
 
 struct HookEntry {
-    const char *ns;        // 命名空间
+    const char *tag;       // 日志标签 H1/H2/...
+    const char *ns;        // 命名空间 (可为 nullptr 表示忽略)
     const char *cls;       // 类名
     const char *method;    // 方法名
-    int argCount;          // 参数个数
+    int argCounts[4];      // 尝试的参数个数列表 (不含 self), -1 结尾
+    uint64_t rva;          // RVA 地址 (来自 dump.cs), 0 表示不用 RVA
     void *fake_fn;         // hook 函数
     void **orig_fn;        // 保存原始函数指针
 };
 
-static bool hookMethod(const HookEntry &entry) {
+// 全局 il2cpp_base，在 register_trace_hooks 中设置
+static uint64_t g_il2cpp_base = 0;
+
+// 辅助: 检查字符串是否包含子串 (不区分大小写)
+static bool strContainsI(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return false;
+    size_t hLen = strlen(haystack);
+    size_t nLen = strlen(needle);
+    if (nLen > hLen) return false;
+    for (size_t i = 0; i <= hLen - nLen; i++) {
+        bool match = true;
+        for (size_t j = 0; j < nLen; j++) {
+            char hc = haystack[i + j];
+            char nc = needle[j];
+            if (hc >= 'A' && hc <= 'Z') hc += 32;
+            if (nc >= 'A' && nc <= 'Z') nc += 32;
+            if (hc != nc) { match = false; break; }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+// 诊断: 输出所有包含关键词的类
+static void diagnoseClasses(const char *keyword) {
     if (!il2cpp_domain_get || !il2cpp_domain_get_assemblies ||
-        !il2cpp_assembly_get_image || !il2cpp_class_from_name ||
-        !il2cpp_class_get_method_from_name) {
-        LOGH("ERROR: il2cpp API not initialized");
-        return false;
+        !il2cpp_assembly_get_image || !il2cpp_image_get_class_count ||
+        !il2cpp_image_get_class || !il2cpp_class_get_name ||
+        !il2cpp_class_get_namespace) {
+        return;
     }
 
     auto domain = il2cpp_domain_get();
-    if (!domain) {
-        LOGH("ERROR: il2cpp_domain_get() returned null");
-        return false;
-    }
+    if (!domain) return;
 
     size_t asmCount = 0;
     auto assemblies = il2cpp_domain_get_assemblies(domain, &asmCount);
-    if (!assemblies) {
-        LOGH("ERROR: il2cpp_domain_get_assemblies() returned null");
-        return false;
+    if (!assemblies) return;
+
+    int found = 0;
+    for (size_t i = 0; i < asmCount && found < 20; i++) {
+        auto image = il2cpp_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        auto classCount = il2cpp_image_get_class_count(image);
+        for (size_t j = 0; j < classCount && found < 20; j++) {
+            auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
+            if (!klass) continue;
+            auto name = il2cpp_class_get_name(klass);
+            if (!name) continue;
+            if (strContainsI(name, keyword)) {
+                auto ns = il2cpp_class_get_namespace(klass);
+                LOGH("[DIAG] Found: '%s.%s'", ns ? ns : "", name);
+                found++;
+            }
+        }
     }
+    if (found == 0) {
+        LOGH("[DIAG] No class containing '%s' found", keyword);
+    }
+}
+
+// 策略1: namespace+className 精确匹配
+static bool hookByExactName(const HookEntry &entry) {
+    auto domain = il2cpp_domain_get();
+    if (!domain) return false;
+
+    size_t asmCount = 0;
+    auto assemblies = il2cpp_domain_get_assemblies(domain, &asmCount);
+    if (!assemblies) return false;
 
     for (size_t i = 0; i < asmCount; i++) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         if (!image) continue;
-        auto klass = il2cpp_class_from_name(image, entry.ns, entry.cls);
-        if (!klass) continue;
-        auto method = il2cpp_class_get_method_from_name(klass, entry.method, entry.argCount);
-        if (!method) continue;
+        auto classCount = il2cpp_image_get_class_count(image);
+        for (size_t j = 0; j < classCount; j++) {
+            auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
+            if (!klass) continue;
+            auto ns = il2cpp_class_get_namespace(klass);
+            auto name = il2cpp_class_get_name(klass);
+            if (!ns || !name) continue;
+            if (strcmp(ns, entry.ns) != 0 || strcmp(name, entry.cls) != 0) continue;
 
-        // 保存原始 methodPointer
-        *entry.orig_fn = (void *)method->methodPointer;
-        // 替换为 hook 函数 (const_cast 因为 il2cpp API 返回 const 指针)
-        const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
+            // 找到类，尝试不同 argCount
+            for (int k = 0; entry.argCounts[k] >= 0; k++) {
+                auto method = il2cpp_class_get_method_from_name(klass, entry.method, entry.argCounts[k]);
+                if (method) {
+                    *entry.orig_fn = (void *)method->methodPointer;
+                    const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
+                    LOGH("[%s OK] %s.%s.%s(argCount=%d) @ %p -> %p",
+                         entry.tag, entry.ns, entry.cls, entry.method, entry.argCounts[k],
+                         *entry.orig_fn, entry.fake_fn);
+                    return true;
+                }
+            }
+            LOGH("[%s WARN] Found class %s.%s but method '%s' not found with any argCount",
+                 entry.tag, entry.ns, entry.cls, entry.method);
+            return false;
+        }
+    }
+    return false;
+}
 
-        LOGH("[OK] %s.%s.%s @ %p -> %p",
-             entry.ns, entry.cls, entry.method, *entry.orig_fn, entry.fake_fn);
-        return true;
+// 策略2: 只按 className 匹配（忽略 namespace）
+static bool hookByClassNameOnly(const HookEntry &entry) {
+    auto domain = il2cpp_domain_get();
+    if (!domain) return false;
+
+    size_t asmCount = 0;
+    auto assemblies = il2cpp_domain_get_assemblies(domain, &asmCount);
+    if (!assemblies) return false;
+
+    for (size_t i = 0; i < asmCount; i++) {
+        auto image = il2cpp_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        auto classCount = il2cpp_image_get_class_count(image);
+        for (size_t j = 0; j < classCount; j++) {
+            auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
+            if (!klass) continue;
+            auto name = il2cpp_class_get_name(klass);
+            if (!name || strcmp(name, entry.cls) != 0) continue;
+
+            auto ns = il2cpp_class_get_namespace(klass);
+            LOGH("[%s FALLBACK] Found %s.%s (expected %s.%s), trying method...",
+                 entry.tag, ns ? ns : "", name, entry.ns, entry.cls);
+
+            for (int k = 0; entry.argCounts[k] >= 0; k++) {
+                auto method = il2cpp_class_get_method_from_name(klass, entry.method, entry.argCounts[k]);
+                if (method) {
+                    *entry.orig_fn = (void *)method->methodPointer;
+                    const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
+                    LOGH("[%s OK] %s.%s.%s(argCount=%d) @ %p -> %p",
+                         entry.tag, ns ? ns : "", entry.cls, entry.method, entry.argCounts[k],
+                         *entry.orig_fn, entry.fake_fn);
+                    return true;
+                }
+            }
+            LOGH("[%s WARN] Found class %s.%s but method '%s' not found",
+                 entry.tag, ns ? ns : "", name, entry.method);
+            return false;
+        }
+    }
+    return false;
+}
+
+// 策略3: RVA 直接匹配 (最可靠)
+// 遍历所有类的方法，找到 methodPointer 等于 il2cpp_base + rva 的方法
+static bool hookByRVA(const HookEntry &entry) {
+    if (!g_il2cpp_base || !entry.rva) return false;
+
+    auto domain = il2cpp_domain_get();
+    if (!domain) return false;
+
+    size_t asmCount = 0;
+    auto assemblies = il2cpp_domain_get_assemblies(domain, &asmCount);
+    if (!assemblies) return false;
+
+    void *targetAddr = (void *)(g_il2cpp_base + entry.rva);
+
+    for (size_t i = 0; i < asmCount; i++) {
+        auto image = il2cpp_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        auto classCount = il2cpp_image_get_class_count(image);
+        for (size_t j = 0; j < classCount; j++) {
+            auto klass = const_cast<Il2CppClass *>(il2cpp_image_get_class(image, j));
+            if (!klass) continue;
+
+            // 用 il2cpp_class_get_methods 遍历方法
+            void *iter = nullptr;
+            const MethodInfo *method = nullptr;
+            while ((method = il2cpp_class_get_methods(klass, &iter)) != nullptr) {
+                if ((void *)method->methodPointer == targetAddr) {
+                    auto ns = il2cpp_class_get_namespace(klass);
+                    auto name = il2cpp_class_get_name(klass);
+                    *entry.orig_fn = (void *)method->methodPointer;
+                    const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
+                    LOGH("[%s OK-RVA] %s.%s @ %p -> %p [RVA=0x%llx]",
+                         entry.tag, ns ? ns : "", name ? name : "?",
+                         *entry.orig_fn, entry.fake_fn, (unsigned long long)entry.rva);
+                    return true;
+                }
+            }
+        }
     }
 
-    LOGH("[FAIL] %s.%s.%s not found in any assembly", entry.ns, entry.cls, entry.method);
+    LOGH("[%s FAIL-RVA] No method with RVA=0x%llx (addr=%p) found",
+         entry.tag, (unsigned long long)entry.rva, targetAddr);
+    return false;
+}
+
+// 综合注册: 依次尝试 精确名 -> 类名匹配 -> RVA
+static bool hookMethodMulti(const HookEntry &entry) {
+    // 策略1: 精确 namespace+className
+    if (entry.ns && hookByExactName(entry)) return true;
+
+    // 策略2: 只按 className
+    if (hookByClassNameOnly(entry)) return true;
+
+    // 策略3: RVA
+    if (entry.rva && hookByRVA(entry)) return true;
+
+    LOGH("[%s FAIL] All strategies failed for %s.%s.%s",
+         entry.tag, entry.ns ? entry.ns : "", entry.cls, entry.method);
     return false;
 }
 
@@ -318,21 +492,32 @@ void register_trace_hooks() {
         return;
     }
 
+    g_il2cpp_base = base;
     LOGH("il2cpp_base=0x%" PRIx64, base);
 
+    // 先做诊断: 搜索包含关键词的类
+    LOGH("=== DIAGNOSTIC: searching classes ===");
+    diagnoseClasses("RoleLogin");
+    diagnoseClasses("GuideFuncOpened");
+    diagnoseClasses("FuncOpen");
+    LOGH("=== DIAGNOSTIC done ===");
+
+    // argCounts: 尝试不同的参数个数 (不含 self)
+    // unpack(PbReadBuf, uint, PbStack) -> 3 个参数 (不含 self)
+    // 但 il2cpp 有时把返回值也算参数，所以也尝试 4
     HookEntry entries[] = {
-        { "net",      "CSRoleLoginRes",       "unpack",               4, (void *)hook_H1, (void **)&orig_H1 },
-        { "net",      "CSGuideFuncOpenedRes", "unpack",               4, (void *)hook_H2, (void **)&orig_H2 },
-        { "S6Game",   "FuncOpenMgr",          "CheckOpenList",        1, (void *)hook_H3, (void **)&orig_H3 },
-        { "S6Game",   "FuncOpenMgr",          "ReqFuncOpenData",      0, (void *)hook_H4, (void **)&orig_H4 },
-        { "S6Game",   "FuncOpenMgr",          "HandleNotifyFuncOpened", 2, (void *)hook_H5, (void **)&orig_H5 },
-        { "S6Game",   "FuncOpenMgr",          "CheckFuncOpen",        2, (void *)hook_H6, (void **)&orig_H6 },
-        { "S6Game",   "FuncOpenNetMgr",       "NotifySysOpenCfg",     2, (void *)hook_H7, (void **)&orig_H7 },
+        { "H1", "net",    "CSRoleLoginRes",       "unpack",               {3, 4, -1},       0x251E144, (void *)hook_H1, (void **)&orig_H1 },
+        { "H2", "net",    "CSGuideFuncOpenedRes", "unpack",               {3, 4, -1},       0x24770A0, (void *)hook_H2, (void **)&orig_H2 },
+        { "H3", "S6Game", "FuncOpenMgr",          "CheckOpenList",        {1, 0, -1},       0x1FB21A0, (void *)hook_H3, (void **)&orig_H3 },
+        { "H4", "S6Game", "FuncOpenMgr",          "ReqFuncOpenData",      {0, -1},          0x1FB2900, (void *)hook_H4, (void **)&orig_H4 },
+        { "H5", "S6Game", "FuncOpenMgr",          "HandleNotifyFuncOpened", {2, 1, -1},     0x1FB209C, (void *)hook_H5, (void **)&orig_H5 },
+        { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FB29A0, (void *)hook_H6, (void **)&orig_H6 },
+        { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1E858B8, (void *)hook_H7, (void **)&orig_H7 },
     };
 
     int ok = 0;
     for (int i = 0; i < 7; i++) {
-        if (hookMethod(entries[i])) {
+        if (hookMethodMulti(entries[i])) {
             ok++;
         }
     }
