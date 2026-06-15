@@ -102,6 +102,10 @@ static void readUintArray(const void *arrPtr, int32_t *outLen, uint32_t *outBuf,
 
 // ==================== 限流计数器 ====================
 
+// 前向声明 (定义在 inline patching 部分)
+static void unpatchInline(int idx);
+static void repatchInline(int idx);
+
 struct CallCounter {
     int count;
     int limit;
@@ -129,7 +133,9 @@ typedef void (*H1_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack);
 static H1_Fn orig_H1 = nullptr;
 
 static void hook_H1(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
+    unpatchInline(0);
     orig_H1(self, srcBuf, cutVer, stack);
+    repatchInline(0);
     if (!shouldLog(0)) return;
     auto result = safeReadS32((const uint8_t *)self + 0x18);
     auto lastLogout = safeReadU32((const uint8_t *)self + 0x20);
@@ -144,7 +150,9 @@ typedef void (*H2_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack);
 static H2_Fn orig_H2 = nullptr;
 
 static void hook_H2(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
+    unpatchInline(1);
     orig_H2(self, srcBuf, cutVer, stack);
+    repatchInline(1);
     if (!shouldLog(1)) return;
     auto cnt = safeReadS32((const uint8_t *)self + 0x10);
     auto listPtr = safeReadPtr((const uint8_t *)self + 0x18);
@@ -170,7 +178,9 @@ static H3_Fn orig_H3 = nullptr;
 
 static void hook_H3(void *self, void *svrData) {
     if (!shouldLog(2)) {
+        unpatchInline(2);
         orig_H3(self, svrData);
+        repatchInline(2);
         return;
     }
     auto initOpenList = safeReadU8((const uint8_t *)self + 0x10) != 0;
@@ -209,7 +219,9 @@ static void hook_H3(void *self, void *svrData) {
     LOGH("[H3] FuncOpenMgr.CheckOpenList: m_initOpenList=%d m_openFuncList=%s svrData=%s",
          initOpenList, listOut, svrInfo);
 
+    unpatchInline(2);
     orig_H3(self, svrData);
+    repatchInline(2);
 }
 
 // --- H4: FuncOpenMgr.ReqFuncOpenData(self) ---
@@ -217,7 +229,9 @@ typedef void (*H4_Fn)(void *self);
 static H4_Fn orig_H4 = nullptr;
 
 static void hook_H4(void *self) {
+    unpatchInline(3);
     orig_H4(self);
+    repatchInline(3);
     if (!shouldLog(3)) return;
     LOGH("[H4] FuncOpenMgr.ReqFuncOpenData: called");
 }
@@ -227,7 +241,9 @@ typedef void (*H5_Fn)(void *self, int32_t result, void *msg);
 static H5_Fn orig_H5 = nullptr;
 
 static void hook_H5(void *self, int32_t result, void *msg) {
+    unpatchInline(4);
     orig_H5(self, result, msg);
+    repatchInline(4);
     if (!shouldLog(4)) return;
     uint16_t cmd = 0;
     auto head = safeReadPtr((const uint8_t *)msg + 0x10);
@@ -243,7 +259,9 @@ typedef uint8_t (*H6_Fn)(void *self, uint32_t funcType, uint8_t showTips);
 static H6_Fn orig_H6 = nullptr;
 
 static uint8_t hook_H6(void *self, uint32_t funcType, uint8_t showTips) {
+    unpatchInline(5);
     auto ret = orig_H6(self, funcType, showTips);
+    repatchInline(5);
     if (!shouldLog(5)) return ret;
     auto initOpenList = safeReadU8((const uint8_t *)self + 0x10) != 0;
     auto openFuncListPtr = safeReadPtr((const uint8_t *)self + 0x18);
@@ -259,7 +277,9 @@ typedef void (*H7_Fn)(void *self, int32_t result, void *msg);
 static H7_Fn orig_H7 = nullptr;
 
 static void hook_H7(void *self, int32_t result, void *msg) {
+    unpatchInline(6);
     orig_H7(self, result, msg);
+    repatchInline(6);
     if (!shouldLog(6)) return;
     uint16_t cmd = 0;
     auto head = safeReadPtr((const uint8_t *)msg + 0x10);
@@ -328,73 +348,71 @@ static int patchClassVtable(Il2CppClass *klass, const MethodInfo *targetMethod,
 //   BR X16                ; 跳转到 X16 (hook 函数)
 //   .quad hook_address    ; hook 函数地址 (8 bytes)
 //
-// Bridge 函数 (32 bytes):
-//   <原始函数前 16 bytes>  ; 保存的原始指令
-//   LDR X16, [PC, #8]    ; 加载原始函数 +16 的地址
-//   BR X16                ; 跳转回原始函数 +16
-//   .quad orig+16_addr    ; 原始函数 +16 的地址
-//
-// 调用流程:
-//   任何方式调用原函数 -> 入口处被 patch 跳转到 hook -> hook 调用 orig(bridge)
-//   -> bridge 执行保存的原始指令 -> 跳转回原函数 +16 继续执行
+// 调用原始函数的方式: 临时恢复原始指令 -> 调用 -> 重新写入 trampoline
+// (不用 bridge，因为 ARM64 的 PC-relative 指令如 ADRP 在 bridge 地址执行会崩溃)
+// 注意: 非线程安全，但对于单线程游戏逻辑足够
 
-static bool installInlineHook(void *targetFn, void *hookFn, void **origFn) {
-    if (!targetFn || !hookFn || !origFn) return false;
+struct InlineHookInfo {
+    void *targetFn;      // 目标函数地址
+    uint8_t saved[16];   // 保存的原始 16 bytes
+    void *hookFn;        // hook 函数地址
+    bool installed;      // 是否已安装
+};
+
+static InlineHookInfo g_inlineHooks[7] = {};
+
+static bool installInlineHook(void *targetFn, void *hookFn, void **origFn, int idx) {
+    if (!targetFn || !hookFn || !origFn || idx < 0 || idx >= 7) return false;
 
     // 1. 保存原始 16 bytes
-    uint8_t saved[16];
-    memcpy(saved, targetFn, 16);
+    memcpy(g_inlineHooks[idx].saved, targetFn, 16);
+    g_inlineHooks[idx].targetFn = targetFn;
+    g_inlineHooks[idx].hookFn = hookFn;
 
-    // 2. 分配 bridge 内存 (可读/可写/可执行)
-    void *bridge = mmap(nullptr, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (bridge == MAP_FAILED) {
-        LOGH("[INLINE] mmap bridge failed: %s", strerror(errno));
-        return false;
-    }
-
-    // 3. 构建 bridge: 原始指令 + 跳转回原函数+16
-    //    bridge[0:16]  = 保存的原始指令
-    //    bridge[16:20] = LDR X16, [PC, #8]
-    //    bridge[20:24] = BR X16
-    //    bridge[24:32] = targetFn + 16 的地址
-    memcpy(bridge, saved, 16);
-
-    const uint32_t ldrInst = 0x58000050; // LDR X16, label (PC+8)
-    const uint32_t brInst  = 0xD61F0200; // BR X16
-    uint64_t retAddr = (uint64_t)targetFn + 16;
-
-    memcpy((uint8_t *)bridge + 16, &ldrInst, 4);
-    memcpy((uint8_t *)bridge + 20, &brInst, 4);
-    memcpy((uint8_t *)bridge + 24, &retAddr, 8);
-
-    __builtin___clear_cache((char *)bridge, (char *)bridge + 32);
-
-    // 4. 修改目标函数页面为可写
+    // 2. 修改目标函数页面为可写
     long pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t page = (uintptr_t)targetFn & ~(uintptr_t)(pageSize - 1);
     if (mprotect((void *)page, (size_t)pageSize, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
         LOGH("[INLINE] mprotect target page %p failed: %s", (void *)page, strerror(errno));
-        munmap(bridge, 4096);
         return false;
     }
 
-    // 5. 写入 trampoline 到目标函数入口
-    //    targetFn[0:4]   = LDR X16, [PC, #8]
-    //    targetFn[4:8]   = BR X16
-    //    targetFn[8:16]  = hookFn 地址
+    // 3. 写入 trampoline 到目标函数入口
+    const uint32_t ldrInst = 0x58000050; // LDR X16, [PC, #8]
+    const uint32_t brInst  = 0xD61F0200; // BR X16
     uint64_t hookAddr = (uint64_t)hookFn;
     memcpy(targetFn, &ldrInst, 4);
     memcpy((uint8_t *)targetFn + 4, &brInst, 4);
     memcpy((uint8_t *)targetFn + 8, &hookAddr, 8);
-
     __builtin___clear_cache((char *)targetFn, (char *)targetFn + 16);
 
-    // 6. 更新 orig_fn 为 bridge (调用原始函数时走 bridge，绕过 inline patch)
-    *origFn = bridge;
+    // 4. orig_fn 指向目标函数本身 (调用前临时恢复原始指令)
+    *origFn = targetFn;
+    g_inlineHooks[idx].installed = true;
 
-    LOGH("[INLINE] Patched %p -> %p (bridge=%p)", targetFn, hookFn, bridge);
+    LOGH("[INLINE] Patched %p -> %p (idx=%d)", targetFn, hookFn, idx);
     return true;
+}
+
+// 临时取消 inline patch (恢复原始指令)
+static void unpatchInline(int idx) {
+    if (idx < 0 || idx >= 7 || !g_inlineHooks[idx].installed) return;
+    memcpy(g_inlineHooks[idx].targetFn, g_inlineHooks[idx].saved, 16);
+    __builtin___clear_cache((char *)g_inlineHooks[idx].targetFn,
+                            (char *)g_inlineHooks[idx].targetFn + 16);
+}
+
+// 重新写入 inline patch (trampoline)
+static void repatchInline(int idx) {
+    if (idx < 0 || idx >= 7 || !g_inlineHooks[idx].installed) return;
+    const uint32_t ldrInst = 0x58000050;
+    const uint32_t brInst  = 0xD61F0200;
+    uint64_t hookAddr = (uint64_t)g_inlineHooks[idx].hookFn;
+    memcpy(g_inlineHooks[idx].targetFn, &ldrInst, 4);
+    memcpy((uint8_t *)g_inlineHooks[idx].targetFn + 4, &brInst, 4);
+    memcpy((uint8_t *)g_inlineHooks[idx].targetFn + 8, &hookAddr, 8);
+    __builtin___clear_cache((char *)g_inlineHooks[idx].targetFn,
+                            (char *)g_inlineHooks[idx].targetFn + 16);
 }
 
 // ==================== 多策略 Hook 注册 ====================
@@ -673,11 +691,11 @@ void register_trace_hooks() {
     // ==================== Inline Code Patching ====================
     // methodPointer 替换和 vtable patching 可能因 il2cpp 分派机制而失效
     // inline patching 直接修改目标函数入口机器码，是最可靠的方式
-    // 必须在 methodPointer 替换之后执行，因为 inline patch 会更新 orig_fn 为 bridge
+    // inline patch 会更新 orig_fn 为目标函数地址，hook 回调中用 unpatch/repatch 调用原函数
     for (int i = 0; i < 7; i++) {
         if (entries[i].rva == 0) continue;
         void *targetFn = (void *)(g_il2cpp_base + entries[i].rva);
-        if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn)) {
+        if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn, i)) {
             LOGH("[INLINE-%s] OK at %p (RVA=0x%llx)", entries[i].tag, targetFn,
                  (unsigned long long)entries[i].rva);
         } else {
