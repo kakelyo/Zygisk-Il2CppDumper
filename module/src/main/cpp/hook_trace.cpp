@@ -10,6 +10,7 @@
 
 #include "hook_trace.h"
 #include "il2cpp_dump.h"
+#include "il2cpp-class.h"
 #include "log.h"
 
 #include <cinttypes>
@@ -18,11 +19,13 @@
 #include <cstring>
 
 // ==================== il2cpp API 函数指针 ====================
-// 这些在 il2cpp_dump.cpp 中通过 DO_API 宏定义，需要 extern 引用
+// 这些在 il2cpp_dump.cpp 中定义，这里只 extern 声明我们需要的几个
 
-#define DO_API(r, n, p) extern r (*n) p
-#include "il2cpp-api-functions.h"
-#undef DO_API
+extern Il2CppDomain *(*il2cpp_domain_get)();
+extern const Il2CppAssembly *(*il2cpp_domain_get_assemblies)(const Il2CppDomain *domain, size_t *size);
+extern Il2CppImage *(*il2cpp_assembly_get_image)(const Il2CppAssembly *assembly);
+extern Il2CppClass *(*il2cpp_class_from_name)(const Il2CppImage *image, const char *namespaze, const char *name);
+extern const MethodInfo *(*il2cpp_class_get_method_from_name)(Il2CppClass *klass, const char *name, int argsCount);
 
 // ==================== 安全读取工具 ====================
 
