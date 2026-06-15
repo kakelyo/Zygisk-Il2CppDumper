@@ -14,6 +14,8 @@
 
 #include <dobby.h>
 #include <cinttypes>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 // ==================== RVA 配置 (来自 dump.cs) ====================
