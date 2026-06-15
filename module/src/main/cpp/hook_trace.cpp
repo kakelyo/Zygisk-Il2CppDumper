@@ -111,9 +111,9 @@ struct CallCounter {
     int limit;
 };
 
-static CallCounter g_counters[7] = {
+static CallCounter g_counters[8] = {
     {0, 10}, {0, 10}, {0, 10}, {0, 10},
-    {0, 10}, {0, 50}, {0, 10}
+    {0, 50}, {0, 10}, {0, 10}, {0, 10}
 };
 
 static bool shouldLog(int idx) {
@@ -128,32 +128,46 @@ static bool shouldLog(int idx) {
 
 // ==================== Hook 回调 ====================
 
-// --- H1: CSRoleLoginRes.unpack(self, srcBuf, cutVer, stack) ---
-typedef void (*H1_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack);
+// --- H1: CSRoleLoginRes.unpack(self, srcBuf, cutVer, stack) -> PbError.ErrorType ---
+typedef int32_t (*H1_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack);
 static H1_Fn orig_H1 = nullptr;
 
-static void hook_H1(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
+static int32_t hook_H1(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
     unpatchInline(0);
-    orig_H1(self, srcBuf, cutVer, stack);
+    auto ret = orig_H1(self, srcBuf, cutVer, stack);
     repatchInline(0);
-    if (!shouldLog(0)) return;
-    auto result = safeReadS32((const uint8_t *)self + 0x18);
+    if (!shouldLog(0)) return ret;
+    // CSRoleLoginRes layout (dump.cs):
+    //   +0x10  UinInfo (ptr)    - 引用类型，8字节指针
+    //   +0x18  ProtoResult (ptr) - 引用类型，8字节指针！不是 int
+    //   +0x20  LastLogoutTime (uint)
+    //   +0x24  WearShape (byte)
+    //   +0x28  RoleData (ptr)
+    //   +0x30  RegionID (int)
+    // ProtoResult layout:
+    //   +0x10  Ret (int) - 真正的返回码
+    auto resultPtr = safeReadPtr((const uint8_t *)self + 0x18);
+    int32_t resultRet = -999;
+    if (resultPtr) {
+        resultRet = safeReadS32((const uint8_t *)resultPtr + 0x10);
+    }
     auto lastLogout = safeReadU32((const uint8_t *)self + 0x20);
     auto wearShape = safeReadU8((const uint8_t *)self + 0x24);
     auto regionID = safeReadS32((const uint8_t *)self + 0x30);
-    LOGH("[H1] CSRoleLoginRes.unpack: Result=%d LastLogoutTime=%u WearShape=%u RegionID=%d",
-         result, lastLogout, wearShape, regionID);
+    LOGH("[H1] CSRoleLoginRes.unpack: ret=%d Result.Ret=%d (protoPtr=%p) LastLogoutTime=%u WearShape=%u RegionID=%d",
+         ret, resultRet, resultPtr, lastLogout, wearShape, regionID);
+    return ret;
 }
 
-// --- H2: CSGuideFuncOpenedRes.unpack(self, srcBuf, cutVer, stack) ---
-typedef void (*H2_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack);
+// --- H2: CSGuideFuncOpenedRes.unpack(self, srcBuf, cutVer, stack) -> PbError.ErrorType ---
+typedef int32_t (*H2_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack);
 static H2_Fn orig_H2 = nullptr;
 
-static void hook_H2(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
+static int32_t hook_H2(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
     unpatchInline(1);
-    orig_H2(self, srcBuf, cutVer, stack);
+    auto ret = orig_H2(self, srcBuf, cutVer, stack);
     repatchInline(1);
-    if (!shouldLog(1)) return;
+    if (!shouldLog(1)) return ret;
     auto cnt = safeReadS32((const uint8_t *)self + 0x10);
     auto listPtr = safeReadPtr((const uint8_t *)self + 0x18);
     uint32_t buf[200];
@@ -169,7 +183,8 @@ static void hook_H2(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
     if (arrLen > 50) pos += snprintf(out + pos, sizeof(out) - pos, "...(%d more)", arrLen - 50);
     if (printCount > 0) pos--;
     pos += snprintf(out + pos, sizeof(out) - pos, "]");
-    LOGH("[H2] CSGuideFuncOpenedRes.unpack: %s", out);
+    LOGH("[H2] CSGuideFuncOpenedRes.unpack: ret=%d %s", ret, out);
+    return ret;
 }
 
 // --- H3: FuncOpenMgr.CheckOpenList(self, svrData) ---
@@ -258,15 +273,25 @@ static void hook_H5(void *self, int32_t result, void *msg) {
 typedef uint8_t (*H6_Fn)(void *self, uint32_t funcType, uint8_t showTips);
 static H6_Fn orig_H6 = nullptr;
 
+// 强制 CheckFuncOpen 返回 true，绕过功能开放检查
+// 当 m_openFuncList 为空时 (FuncOpenMgr 未初始化)，所有功能检查都返回 false
+// 导致游戏卡在登录界面无法进入，强制返回 true 可以绕过此限制
+static bool g_forceFuncOpen = true;
+
 static uint8_t hook_H6(void *self, uint32_t funcType, uint8_t showTips) {
     unpatchInline(5);
     auto ret = orig_H6(self, funcType, showTips);
     repatchInline(5);
-    if (!shouldLog(5)) return ret;
+    if (!shouldLog(5)) return g_forceFuncOpen ? 1 : ret;
     auto initOpenList = safeReadU8((const uint8_t *)self + 0x10) != 0;
     auto openFuncListPtr = safeReadPtr((const uint8_t *)self + 0x18);
     int32_t listSize = 0;
     readUintList(openFuncListPtr, &listSize, nullptr, 0);
+    if (g_forceFuncOpen && !ret) {
+        LOGH("[H6] FuncOpenMgr.CheckFuncOpen: funcType=%u showTips=%u origRet=%u -> FORCED TRUE (m_initOpenList=%d m_openFuncList.size=%d)",
+             funcType, showTips, ret, initOpenList, listSize);
+        return 1;
+    }
     LOGH("[H6] FuncOpenMgr.CheckFuncOpen: funcType=%u showTips=%u ret=%u m_initOpenList=%d m_openFuncList.size=%d",
          funcType, showTips, ret, initOpenList, listSize);
     return ret;
@@ -288,6 +313,31 @@ static void hook_H7(void *self, int32_t result, void *msg) {
     }
     LOGH("[H7] FuncOpenNetMgr.NotifySysOpenCfg: result=%d msg.Cmd=0x%04X(%u)",
          result, cmd, cmd);
+}
+
+// --- H8: FuncOpenMgr.Init(self) ---
+typedef void (*H8_Fn)(void *self);
+static H8_Fn orig_H8 = nullptr;
+
+static void hook_H8(void *self) {
+    unpatchInline(7);
+    orig_H8(self);
+    repatchInline(7);
+    auto initOpenList = safeReadU8((const uint8_t *)self + 0x10) != 0;
+    auto openFuncListPtr = safeReadPtr((const uint8_t *)self + 0x18);
+    int32_t listSize = 0;
+    uint32_t listBuf[200];
+    readUintList(openFuncListPtr, &listSize, listBuf, 200);
+    char listOut[512];
+    int lPos = 0;
+    lPos += snprintf(listOut, sizeof(listOut), "size=%d [", listSize);
+    int printCount = listSize > 30 ? 30 : listSize;
+    for (int i = 0; i < printCount; i++) {
+        lPos += snprintf(listOut + lPos, sizeof(listOut) - lPos, "%u,", listBuf[i]);
+    }
+    if (printCount > 0) lPos--;
+    snprintf(listOut + lPos, sizeof(listOut) - lPos, "]");
+    LOGH("[H8] FuncOpenMgr.Init: m_initOpenList=%d m_openFuncList=%s", initOpenList, listOut);
 }
 
 // ==================== VTable Patch ====================
@@ -359,10 +409,10 @@ struct InlineHookInfo {
     bool installed;      // 是否已安装
 };
 
-static InlineHookInfo g_inlineHooks[7] = {};
+static InlineHookInfo g_inlineHooks[8] = {};
 
 static bool installInlineHook(void *targetFn, void *hookFn, void **origFn, int idx) {
-    if (!targetFn || !hookFn || !origFn || idx < 0 || idx >= 7) return false;
+    if (!targetFn || !hookFn || !origFn || idx < 0 || idx >= 8) return false;
 
     // 1. 保存原始 16 bytes
     memcpy(g_inlineHooks[idx].saved, targetFn, 16);
@@ -396,7 +446,7 @@ static bool installInlineHook(void *targetFn, void *hookFn, void **origFn, int i
 
 // 临时取消 inline patch (恢复原始指令)
 static void unpatchInline(int idx) {
-    if (idx < 0 || idx >= 7 || !g_inlineHooks[idx].installed) return;
+    if (idx < 0 || idx >= 8 || !g_inlineHooks[idx].installed) return;
     memcpy(g_inlineHooks[idx].targetFn, g_inlineHooks[idx].saved, 16);
     __builtin___clear_cache((char *)g_inlineHooks[idx].targetFn,
                             (char *)g_inlineHooks[idx].targetFn + 16);
@@ -404,7 +454,7 @@ static void unpatchInline(int idx) {
 
 // 重新写入 inline patch (trampoline)
 static void repatchInline(int idx) {
-    if (idx < 0 || idx >= 7 || !g_inlineHooks[idx].installed) return;
+    if (idx < 0 || idx >= 8 || !g_inlineHooks[idx].installed) return;
     const uint32_t ldrInst = 0x58000050;
     const uint32_t brInst  = 0xD61F0200;
     uint64_t hookAddr = (uint64_t)g_inlineHooks[idx].hookFn;
@@ -677,34 +727,41 @@ void register_trace_hooks() {
         { "H5", "S6Game", "FuncOpenMgr",          "HandleNotifyFuncOpened", {2, 1, -1},     0x1FE5264, (void *)hook_H5, (void **)&orig_H5 },
         { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FE5B60, (void *)hook_H6, (void **)&orig_H6 },
         { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1EB2F10, (void *)hook_H7, (void **)&orig_H7 },
+        { "H8", "S6Game", "FuncOpenMgr",          "Init",                 {0, -1},          0x1FE4FD4, (void *)hook_H8, (void **)&orig_H8 },
     };
 
     int ok = 0;
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 8; i++) {
         if (hookMethodMulti(entries[i])) {
             ok++;
         }
     }
 
-    LOGH("Registered %d/7 hooks via methodPointer+vtable. Now applying inline patches...", ok);
+    LOGH("Registered %d/8 hooks via methodPointer+vtable (g_forceFuncOpen=%d). Inline patching DISABLED.", ok, g_forceFuncOpen ? 1 : 0);
 
     // ==================== Inline Code Patching ====================
-    // methodPointer 替换和 vtable patching 可能因 il2cpp 分派机制而失效
-    // inline patching 直接修改目标函数入口机器码，是最可靠的方式
-    // 重要: 必须用 il2cpp API 返回的实际 methodPointer，不用 RVA 计算
-    //       (dump.cs 的 RVA 可能来自不同版本的二进制，地址不一致会破坏无关代码)
-    for (int i = 0; i < 7; i++) {
-        void *targetFn = *entries[i].orig_fn;  // 使用 il2cpp API 的实际 methodPointer
-        if (!targetFn) {
-            LOGH("[INLINE-%s] SKIP: orig_fn is null (method not found)", entries[i].tag);
-            continue;
-        }
-        if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn, i)) {
-            LOGH("[INLINE-%s] OK at %p (actual methodPointer)", entries[i].tag, targetFn);
-        } else {
-            LOGH("[INLINE-%s] FAILED at %p", entries[i].tag, targetFn);
+    // DISABLED: inline patching 直接修改目标函数入口机器码
+    // 实测 methodPointer+vtable 已经足够让 hook 触发 (H1/H6 均正常触发)
+    // inline patching 在多线程环境下 unpatch/repatch 不安全，可能导致:
+    //   1. 函数执行被破坏 (另一个线程执行到半修改的指令)
+    //   2. 游戏逻辑卡住 (某些函数的 prologue 被破坏后恢复不完整)
+    // 如果确认 methodPointer+vtable 不够，可以设置 g_useInlinePatch=true
+    static bool g_useInlinePatch = false;
+    if (g_useInlinePatch) {
+        for (int i = 0; i < 8; i++) {
+            void *targetFn = *entries[i].orig_fn;
+            if (!targetFn) {
+                LOGH("[INLINE-%s] SKIP: orig_fn is null (method not found)", entries[i].tag);
+                continue;
+            }
+            if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn, i)) {
+                LOGH("[INLINE-%s] OK at %p (actual methodPointer)", entries[i].tag, targetFn);
+            } else {
+                LOGH("[INLINE-%s] FAILED at %p", entries[i].tag, targetFn);
+            }
         }
     }
 
-    LOGH("All hooks installed (methodPointer+vtable+inline). Waiting for game login...");
+    LOGH("All hooks installed (methodPointer+vtable, inline=%s). g_forceFuncOpen=%d. Waiting for game login...",
+         g_useInlinePatch ? "ON" : "OFF", g_forceFuncOpen ? 1 : 0);
 }
