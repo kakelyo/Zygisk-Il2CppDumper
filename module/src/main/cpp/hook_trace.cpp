@@ -670,13 +670,13 @@ void register_trace_hooks() {
     // unpack(PbReadBuf, uint, PbStack) -> 3 个参数 (不含 self)
     // 但 il2cpp 有时把返回值也算参数，所以也尝试 4
     HookEntry entries[] = {
-        { "H1", "net",    "CSRoleLoginRes",       "unpack",               {3, 4, -1},       0x251E144, (void *)hook_H1, (void **)&orig_H1 },
-        { "H2", "net",    "CSGuideFuncOpenedRes", "unpack",               {3, 4, -1},       0x24770A0, (void *)hook_H2, (void **)&orig_H2 },
-        { "H3", "S6Game", "FuncOpenMgr",          "CheckOpenList",        {1, 0, -1},       0x1FB21A0, (void *)hook_H3, (void **)&orig_H3 },
-        { "H4", "S6Game", "FuncOpenMgr",          "ReqFuncOpenData",      {0, -1},          0x1FB2900, (void *)hook_H4, (void **)&orig_H4 },
-        { "H5", "S6Game", "FuncOpenMgr",          "HandleNotifyFuncOpened", {2, 1, -1},     0x1FB209C, (void *)hook_H5, (void **)&orig_H5 },
-        { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FB29A0, (void *)hook_H6, (void **)&orig_H6 },
-        { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1E858B8, (void *)hook_H7, (void **)&orig_H7 },
+        { "H1", "net",    "CSRoleLoginRes",       "unpack",               {3, 4, -1},       0x25692C8, (void *)hook_H1, (void **)&orig_H1 },
+        { "H2", "net",    "CSGuideFuncOpenedRes", "unpack",               {3, 4, -1},       0x24BFE58, (void *)hook_H2, (void **)&orig_H2 },
+        { "H3", "S6Game", "FuncOpenMgr",          "CheckOpenList",        {1, 0, -1},       0x1FE5368, (void *)hook_H3, (void **)&orig_H3 },
+        { "H4", "S6Game", "FuncOpenMgr",          "ReqFuncOpenData",      {0, -1},          0x1FE5AC8, (void *)hook_H4, (void **)&orig_H4 },
+        { "H5", "S6Game", "FuncOpenMgr",          "HandleNotifyFuncOpened", {2, 1, -1},     0x1FE5264, (void *)hook_H5, (void **)&orig_H5 },
+        { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FE5B60, (void *)hook_H6, (void **)&orig_H6 },
+        { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1EB2F10, (void *)hook_H7, (void **)&orig_H7 },
     };
 
     int ok = 0;
@@ -691,16 +691,18 @@ void register_trace_hooks() {
     // ==================== Inline Code Patching ====================
     // methodPointer 替换和 vtable patching 可能因 il2cpp 分派机制而失效
     // inline patching 直接修改目标函数入口机器码，是最可靠的方式
-    // inline patch 会更新 orig_fn 为目标函数地址，hook 回调中用 unpatch/repatch 调用原函数
+    // 重要: 必须用 il2cpp API 返回的实际 methodPointer，不用 RVA 计算
+    //       (dump.cs 的 RVA 可能来自不同版本的二进制，地址不一致会破坏无关代码)
     for (int i = 0; i < 7; i++) {
-        if (entries[i].rva == 0) continue;
-        void *targetFn = (void *)(g_il2cpp_base + entries[i].rva);
+        void *targetFn = *entries[i].orig_fn;  // 使用 il2cpp API 的实际 methodPointer
+        if (!targetFn) {
+            LOGH("[INLINE-%s] SKIP: orig_fn is null (method not found)", entries[i].tag);
+            continue;
+        }
         if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn, i)) {
-            LOGH("[INLINE-%s] OK at %p (RVA=0x%llx)", entries[i].tag, targetFn,
-                 (unsigned long long)entries[i].rva);
+            LOGH("[INLINE-%s] OK at %p (actual methodPointer)", entries[i].tag, targetFn);
         } else {
-            LOGH("[INLINE-%s] FAILED at %p (RVA=0x%llx), falling back to methodPointer",
-                 entries[i].tag, targetFn, (unsigned long long)entries[i].rva);
+            LOGH("[INLINE-%s] FAILED at %p", entries[i].tag, targetFn);
         }
     }
 
