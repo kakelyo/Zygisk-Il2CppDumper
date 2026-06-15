@@ -417,12 +417,12 @@ static uint8_t *allocBridge() {
         }
         LOGH("[BRIDGE] pool allocated at %p (%d bytes)", g_bridgePool, BRIDGE_POOL_SIZE);
     }
-    if (g_bridgePoolOffset + 64 > BRIDGE_POOL_SIZE) {
+    if (g_bridgePoolOffset + 128 > BRIDGE_POOL_SIZE) {
         LOGH("[BRIDGE] pool exhausted");
         return nullptr;
     }
     uint8_t *p = g_bridgePool + g_bridgePoolOffset;
-    g_bridgePoolOffset += 64; // 每个 bridge 最多 64 bytes
+    g_bridgePoolOffset += 128; // 每个 bridge 最多 128 bytes (间接跳转替代可能需要更多空间)
     return p;
 }
 
@@ -500,43 +500,165 @@ static bool fixupLDRLiteral(uint32_t *insn, uintptr_t origPC, uintptr_t newPC) {
 }
 
 // 创建 bridge: 复制原始指令并修复 PC-relative，然后跳回原函数+16
+// 对于超出修复范围的 PC-relative 指令，用间接跳转替代
+// 两遍扫描: 第一遍计算每条指令展开后的大小，第二遍生成代码
+struct BridgeInsn {
+    uint32_t orig;        // 原始指令
+    int expandedSize;     // 展开后的大小 (4 或 12 或 16)
+    uint8_t code[16];     // 展开后的代码
+    bool isBL;            // 是否是 BL (需要特殊处理 LR)
+    uint64_t blTarget;    // BL 的目标地址
+    uint64_t blReturnIdx; // BL 返回后应执行的指令索引
+};
+
 static void *createBridge(void *targetFn, const uint8_t *saved) {
     uint8_t *bridge = allocBridge();
     if (!bridge) return nullptr;
 
     uintptr_t origPC = (uintptr_t)targetFn;
-    int pos = 0;
+    BridgeInsn insns[4] = {};
 
+    // 第一遍: 分析每条指令并生成代码，计算展开大小
     for (int i = 0; i < 4; i++) {
         uint32_t insn;
         memcpy(&insn, saved + i * 4, 4);
+        insns[i].orig = insn;
+        insns[i].isBL = false;
         uintptr_t insnOrigPC = origPC + i * 4;
-        uintptr_t insnNewPC = (uintptr_t)bridge + pos;
 
-        // 尝试修复 PC-relative 指令
         if ((insn & 0x9F000000) == 0x90000000) {
             // ADRP
-            if (!fixupADRP(&insn, insnOrigPC, insnNewPC)) {
-                LOGH("[BRIDGE] Failed to fixup ADRP at insn %d, falling back to unpatch/repatch", i);
-                return nullptr;
+            uint32_t fixed = insn;
+            uintptr_t insnNewPC = 0; // 先用 0，第二遍再修复
+            if (fixupADRP(&fixed, insnOrigPC, insnNewPC)) {
+                memcpy(insns[i].code, &fixed, 4);
+                insns[i].expandedSize = 4;
+            } else {
+                // 超出范围，用 LDR Xd, [PC, #4]; .quad target (12 bytes)
+                int64_t immhi = (insn >> 5) & 0x7FFFF;
+                int64_t immlo = (insn >> 29) & 0x3;
+                int64_t imm = (immhi << 2) | immlo;
+                if (imm & 0x100000) imm -= 0x200000;
+                uint64_t target = (insnOrigPC & ~(uint64_t)0xFFF) + (imm << 12);
+                uint32_t rd = insn & 0x1F;
+                uint32_t ldrXd = 0x58000020 | rd; // LDR Xd, label (imm19=1, PC+4)
+                memcpy(insns[i].code, &ldrXd, 4);
+                memcpy(insns[i].code + 4, &target, 8);
+                insns[i].expandedSize = 12;
+                LOGH("[BRIDGE] ADRP out of range at insn %d, replaced with LDR X%d + .quad", i, rd);
             }
-        } else if ((insn & 0xFC000000) == 0x14000000 || (insn & 0xFC000000) == 0x94000000) {
-            // B or BL
-            if (!fixupBBL(&insn, insnOrigPC, insnNewPC)) {
-                LOGH("[BRIDGE] Failed to fixup B/BL at insn %d", i);
-                return nullptr;
+        } else if ((insn & 0xFC000000) == 0x14000000) {
+            // B (unconditional branch) - 超出范围时用间接跳转
+            uint32_t fixed = insn;
+            if (fixupBBL(&fixed, insnOrigPC, 0)) {
+                memcpy(insns[i].code, &fixed, 4);
+                insns[i].expandedSize = 4;
+            } else {
+                int64_t offset = insn & 0x3FFFFFF;
+                if (offset & 0x2000000) offset -= 0x4000000;
+                uint64_t target = insnOrigPC + (offset << 2);
+                // LDR X16, [PC, #8]; BR X16; .quad target (16 bytes)
+                const uint32_t ldrX16 = 0x58000050;
+                const uint32_t brX16 = 0xD61F0200;
+                memcpy(insns[i].code, &ldrX16, 4);
+                memcpy(insns[i].code + 4, &brX16, 4);
+                memcpy(insns[i].code + 8, &target, 8);
+                insns[i].expandedSize = 16;
+                LOGH("[BRIDGE] B out of range at insn %d, replaced with indirect branch", i);
             }
+        } else if ((insn & 0xFC000000) == 0x94000000) {
+            // BL (branch with link) - 需要特殊处理 LR
+            insns[i].isBL = true;
+            int64_t offset = insn & 0x3FFFFFF;
+            if (offset & 0x2000000) offset -= 0x4000000;
+            insns[i].blTarget = insnOrigPC + (offset << 2);
+            // BL 展开为: LDR X16, [PC, #?]; LDR LR, [PC, #?]; BR X16; .quad target; .quad return_addr
+            // 大小在第二遍确定（需要知道返回地址）
+            insns[i].expandedSize = 24; // 固定 24 bytes: 3条指令 + 2个.quad
         } else if ((insn & 0x3B000000) == 0x18000000) {
             // LDR (literal)
-            if (!fixupLDRLiteral(&insn, insnOrigPC, insnNewPC)) {
-                LOGH("[BRIDGE] Failed to fixup LDR literal at insn %d", i);
-                return nullptr;
+            uint32_t fixed = insn;
+            if (fixupLDRLiteral(&fixed, insnOrigPC, 0)) {
+                memcpy(insns[i].code, &fixed, 4);
+                insns[i].expandedSize = 4;
+            } else {
+                // 超出范围，用间接加载: LDR X16, [PC, #8]; LDR Xt, [X16]; .quad target (16 bytes)
+                uint32_t rt = insn & 0x1F;
+                int64_t offset = insn & 0x7FFFF;
+                if (offset & 0x40000) offset -= 0x80000;
+                uint64_t target = insnOrigPC + (offset << 2);
+                const uint32_t ldrX16 = 0x58000050;
+                uint32_t ldrXtX16 = 0xF9400200 | rt;
+                memcpy(insns[i].code, &ldrX16, 4);
+                memcpy(insns[i].code + 4, &ldrXtX16, 4);
+                memcpy(insns[i].code + 8, &target, 8);
+                insns[i].expandedSize = 16;
+                LOGH("[BRIDGE] LDR literal out of range at insn %d, replaced with indirect load", i);
             }
+        } else {
+            // 非 PC-relative 指令，直接复制
+            memcpy(insns[i].code, &insn, 4);
+            insns[i].expandedSize = 4;
         }
-        // 其他指令 (STP, MOV, SUB, ADD 等) 不是 PC-relative，直接复制
+    }
 
-        memcpy(bridge + pos, &insn, 4);
-        pos += 4;
+    // 计算每条指令在 bridge 中的偏移
+    int offsets[5] = {}; // offsets[4] = 所有指令之后的位置
+    offsets[0] = 0;
+    for (int i = 0; i < 4; i++) {
+        offsets[i + 1] = offsets[i] + insns[i].expandedSize;
+    }
+
+    // 第二遍: 生成最终代码
+    int pos = 0;
+    for (int i = 0; i < 4; i++) {
+        if (insns[i].isBL) {
+            // BL 展开为:
+            //   LDR X16, [PC, #12]    ; 加载 target (pos+12)
+            //   LDR LR, [PC, #16]     ; 加载 return_addr (pos+20)
+            //   BR X16                ; 跳转到 target
+            //   .quad target          ; 8 bytes (pos+12~19)
+            //   .quad return_addr     ; 8 bytes (pos+20~27)
+            // return_addr = 下一条指令在 bridge 中的地址
+            uint64_t returnAddr = (uint64_t)bridge + offsets[i + 1];
+            uint32_t ldrX16 = 0x58000070; // LDR X16, label (imm19=3, PC+12)
+            uint32_t ldrLR = 0x5800009E;  // LDR LR (X30), label (imm19=4, PC+16)
+            const uint32_t brX16 = 0xD61F0200; // BR X16
+            memcpy(bridge + pos, &ldrX16, 4); pos += 4;
+            memcpy(bridge + pos, &ldrLR, 4); pos += 4;
+            memcpy(bridge + pos, &brX16, 4); pos += 4;
+            memcpy(bridge + pos, &insns[i].blTarget, 8); pos += 8;
+            memcpy(bridge + pos, &returnAddr, 8); pos += 8;
+            LOGH("[BRIDGE] BL at insn %d, replaced with LDR X16 + LDR LR + BR X16 (target=%p return=%p)",
+                 i, (void *)insns[i].blTarget, (void *)returnAddr);
+        } else {
+            // 非 BL 指令: 需要修复 ADRP/B 的 PC-relative 偏移
+            uint32_t insn;
+            memcpy(&insn, saved + i * 4, 4);
+            uintptr_t insnOrigPC = origPC + i * 4;
+            uintptr_t insnNewPC = (uintptr_t)bridge + pos;
+
+            if (insns[i].expandedSize == 4) {
+                // 4 字节指令，可能需要修复 PC-relative
+                uint32_t fixed = insn;
+                if ((insn & 0x9F000000) == 0x90000000) {
+                    fixupADRP(&fixed, insnOrigPC, insnNewPC);
+                } else if ((insn & 0xFC000000) == 0x14000000) {
+                    fixupBBL(&fixed, insnOrigPC, insnNewPC);
+                } else if ((insn & 0x3B000000) == 0x18000000) {
+                    fixupLDRLiteral(&fixed, insnOrigPC, insnNewPC);
+                }
+                memcpy(bridge + pos, &fixed, 4);
+            } else {
+                // 展开后的指令，PC-relative 已经通过间接方式处理
+                // 但 ADRP 展开中的 LDR Xd, [PC, #4] 需要确认偏移正确
+                // ADRP 展开: LDR Xd, [PC, #4]; .quad target
+                // LDR Xd, [PC, #4] 中 PC = bridge+pos, 加载 bridge+pos+4
+                // .quad target 在 bridge+pos+4，正确
+                memcpy(bridge + pos, insns[i].code, insns[i].expandedSize);
+            }
+            pos += insns[i].expandedSize;
+        }
     }
 
     // 追加跳转回原始函数 +16:
@@ -851,14 +973,14 @@ void register_trace_hooks() {
     // unpack(PbReadBuf, uint, PbStack) -> 3 个参数 (不含 self)
     // 但 il2cpp 有时把返回值也算参数，所以也尝试 4
     HookEntry entries[] = {
-        { "H1", "net",    "CSRoleLoginRes",       "unpack",               {3, 4, -1},       0x25692C8, (void *)hook_H1, (void **)&orig_H1 },
-        { "H2", "net",    "CSGuideFuncOpenedRes", "unpack",               {3, 4, -1},       0x24BFE58, (void *)hook_H2, (void **)&orig_H2 },
-        { "H3", "S6Game", "FuncOpenMgr",          "CheckOpenList",        {1, 0, -1},       0x1FE5368, (void *)hook_H3, (void **)&orig_H3 },
-        { "H4", "S6Game", "FuncOpenMgr",          "ReqFuncOpenData",      {0, -1},          0x1FE5AC8, (void *)hook_H4, (void **)&orig_H4 },
-        { "H5", "S6Game", "FuncOpenMgr",          "HandleNotifyFuncOpened", {2, 1, -1},     0x1FE5264, (void *)hook_H5, (void **)&orig_H5 },
-        { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FE5B60, (void *)hook_H6, (void **)&orig_H6 },
-        { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1EB2F10, (void *)hook_H7, (void **)&orig_H7 },
-        { "H8", "S6Game", "FuncOpenMgr",          "Init",                 {0, -1},          0x1FE4FD4, (void *)hook_H8, (void **)&orig_H8 },
+        { "H1", "net",    "CSRoleLoginRes",       "unpack",               {3, 4, -1},       0x25691F4, (void *)hook_H1, (void **)&orig_H1 },
+        { "H2", "net",    "CSGuideFuncOpenedRes", "unpack",               {3, 4, -1},       0x24BFD84, (void *)hook_H2, (void **)&orig_H2 },
+        { "H3", "S6Game", "FuncOpenMgr",          "CheckOpenList",        {1, 0, -1},       0x1FE57CC, (void *)hook_H3, (void **)&orig_H3 },
+        { "H4", "S6Game", "FuncOpenMgr",          "ReqFuncOpenData",      {0, -1},          0x1FE5F2C, (void *)hook_H4, (void **)&orig_H4 },
+        { "H5", "S6Game", "FuncOpenMgr",          "HandleNotifyFuncOpened", {2, 1, -1},     0x1FE56C8, (void *)hook_H5, (void **)&orig_H5 },
+        { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FE5FC4, (void *)hook_H6, (void **)&orig_H6 },
+        { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1EB3374, (void *)hook_H7, (void **)&orig_H7 },
+        { "H8", "S6Game", "FuncOpenMgr",          "Init",                 {0, -1},          0x1FE5598, (void *)hook_H8, (void **)&orig_H8 },
     };
 
     int ok = 0;
