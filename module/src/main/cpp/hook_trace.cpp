@@ -102,10 +102,6 @@ static void readUintArray(const void *arrPtr, int32_t *outLen, uint32_t *outBuf,
 
 // ==================== 限流计数器 ====================
 
-// 前向声明 (定义在 inline patching 部分)
-static void unpatchInline(int idx);
-static void repatchInline(int idx);
-
 struct CallCounter {
     int count;
     int limit;
@@ -133,9 +129,7 @@ typedef int32_t (*H1_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack)
 static H1_Fn orig_H1 = nullptr;
 
 static int32_t hook_H1(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
-    unpatchInline(0);
     auto ret = orig_H1(self, srcBuf, cutVer, stack);
-    repatchInline(0);
     if (!shouldLog(0)) return ret;
     // CSRoleLoginRes layout (dump.cs):
     //   +0x10  UinInfo (ptr)    - 引用类型，8字节指针
@@ -164,9 +158,7 @@ typedef int32_t (*H2_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack)
 static H2_Fn orig_H2 = nullptr;
 
 static int32_t hook_H2(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
-    unpatchInline(1);
     auto ret = orig_H2(self, srcBuf, cutVer, stack);
-    repatchInline(1);
     if (!shouldLog(1)) return ret;
     auto cnt = safeReadS32((const uint8_t *)self + 0x10);
     auto listPtr = safeReadPtr((const uint8_t *)self + 0x18);
@@ -193,9 +185,7 @@ static H3_Fn orig_H3 = nullptr;
 
 static void hook_H3(void *self, void *svrData) {
     if (!shouldLog(2)) {
-        unpatchInline(2);
         orig_H3(self, svrData);
-        repatchInline(2);
         return;
     }
     auto initOpenList = safeReadU8((const uint8_t *)self + 0x10) != 0;
@@ -234,9 +224,7 @@ static void hook_H3(void *self, void *svrData) {
     LOGH("[H3] FuncOpenMgr.CheckOpenList: m_initOpenList=%d m_openFuncList=%s svrData=%s",
          initOpenList, listOut, svrInfo);
 
-    unpatchInline(2);
     orig_H3(self, svrData);
-    repatchInline(2);
 }
 
 // --- H4: FuncOpenMgr.ReqFuncOpenData(self) ---
@@ -244,9 +232,7 @@ typedef void (*H4_Fn)(void *self);
 static H4_Fn orig_H4 = nullptr;
 
 static void hook_H4(void *self) {
-    unpatchInline(3);
     orig_H4(self);
-    repatchInline(3);
     if (!shouldLog(3)) return;
     LOGH("[H4] FuncOpenMgr.ReqFuncOpenData: called");
 }
@@ -256,9 +242,7 @@ typedef void (*H5_Fn)(void *self, int32_t result, void *msg);
 static H5_Fn orig_H5 = nullptr;
 
 static void hook_H5(void *self, int32_t result, void *msg) {
-    unpatchInline(4);
     orig_H5(self, result, msg);
-    repatchInline(4);
     if (!shouldLog(4)) return;
     uint16_t cmd = 0;
     auto head = safeReadPtr((const uint8_t *)msg + 0x10);
@@ -279,9 +263,7 @@ static H6_Fn orig_H6 = nullptr;
 static bool g_forceFuncOpen = true;
 
 static uint8_t hook_H6(void *self, uint32_t funcType, uint8_t showTips) {
-    unpatchInline(5);
     auto ret = orig_H6(self, funcType, showTips);
-    repatchInline(5);
     if (!shouldLog(5)) return g_forceFuncOpen ? 1 : ret;
     auto initOpenList = safeReadU8((const uint8_t *)self + 0x10) != 0;
     auto openFuncListPtr = safeReadPtr((const uint8_t *)self + 0x18);
@@ -302,9 +284,7 @@ typedef void (*H7_Fn)(void *self, int32_t result, void *msg);
 static H7_Fn orig_H7 = nullptr;
 
 static void hook_H7(void *self, int32_t result, void *msg) {
-    unpatchInline(6);
     orig_H7(self, result, msg);
-    repatchInline(6);
     if (!shouldLog(6)) return;
     uint16_t cmd = 0;
     auto head = safeReadPtr((const uint8_t *)msg + 0x10);
@@ -320,9 +300,7 @@ typedef void (*H8_Fn)(void *self);
 static H8_Fn orig_H8 = nullptr;
 
 static void hook_H8(void *self) {
-    unpatchInline(7);
     orig_H8(self);
-    repatchInline(7);
     auto initOpenList = safeReadU8((const uint8_t *)self + 0x10) != 0;
     auto openFuncListPtr = safeReadPtr((const uint8_t *)self + 0x18);
     int32_t listSize = 0;
@@ -387,29 +365,195 @@ static int patchClassVtable(Il2CppClass *klass, const MethodInfo *targetMethod,
 
 // ==================== Inline Code Patching (ARM64) ====================
 //
-// methodPointer 替换和 vtable patching 都可能因为 il2cpp 的分派机制而失效
-// (例如: thunk、interface dispatch、编译器内联等)
+// methodPointer 替换和 vtable patching 对 AOT 编译的直接调用无效
+// (il2cpp AOT 编译器会将虚方法调用去虚化为直接调用，绕过 vtable)
 //
 // Inline code patching 直接修改目标函数入口的机器码，写入跳转到 hook 的指令
 // 这是最可靠的方式: 无论 il2cpp 如何分派方法调用，最终都会执行到函数入口
 //
-// ARM64 trampoline (16 bytes):
+// ARM64 trampoline (16 bytes) 写入目标函数入口:
 //   LDR X16, [PC, #8]    ; 加载 8 字节后的 hook 地址到 X16
 //   BR X16                ; 跳转到 X16 (hook 函数)
 //   .quad hook_address    ; hook 函数地址 (8 bytes)
 //
-// 调用原始函数的方式: 临时恢复原始指令 -> 调用 -> 重新写入 trampoline
-// (不用 bridge，因为 ARM64 的 PC-relative 指令如 ADRP 在 bridge 地址执行会崩溃)
-// 注意: 非线程安全，但对于单线程游戏逻辑足够
+// 调用原始函数的方式: 通过 bridge (跳板) 执行保存的原始指令
+// bridge 中复制了原始函数的前 4 条指令 (16 bytes)，并修复 PC-relative 指令
+// 然后跳转回原始函数 +16 继续执行。这样 inline patch 永远不需要临时恢复，
+// 是线程安全的。
 
 struct InlineHookInfo {
     void *targetFn;      // 目标函数地址
-    uint8_t saved[16];   // 保存的原始 16 bytes
+    uint8_t saved[16];   // 保存的原始 16 bytes (4 条 ARM64 指令)
     void *hookFn;        // hook 函数地址
+    void *bridge;        // bridge 跳板地址 (调用原始函数用)
     bool installed;      // 是否已安装
 };
 
 static InlineHookInfo g_inlineHooks[8] = {};
+
+// ==================== ARM64 Bridge (跳板) ====================
+//
+// bridge 是一段可执行内存，包含:
+//   1. 原始函数的前 4 条指令 (16 bytes)，PC-relative 指令已修复
+//   2. 跳转回原始函数 +16 的指令
+//
+// hook 回调通过调用 bridge 来执行原始函数，无需 unpatch/repatch
+
+// Bridge 内存池 (简单实现: 分配多个 4K 页面)
+static uint8_t *g_bridgePool = nullptr;
+static int g_bridgePoolOffset = 0;
+static const int BRIDGE_POOL_SIZE = 65536; // 64KB, 足够 8 个 hook
+
+// 分配 bridge 内存
+static uint8_t *allocBridge() {
+    if (!g_bridgePool) {
+        g_bridgePool = (uint8_t *)mmap(nullptr, BRIDGE_POOL_SIZE,
+                                        PROT_READ | PROT_WRITE | PROT_EXEC,
+                                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (g_bridgePool == MAP_FAILED) {
+            g_bridgePool = nullptr;
+            LOGH("[BRIDGE] mmap failed: %s", strerror(errno));
+            return nullptr;
+        }
+        LOGH("[BRIDGE] pool allocated at %p (%d bytes)", g_bridgePool, BRIDGE_POOL_SIZE);
+    }
+    if (g_bridgePoolOffset + 64 > BRIDGE_POOL_SIZE) {
+        LOGH("[BRIDGE] pool exhausted");
+        return nullptr;
+    }
+    uint8_t *p = g_bridgePool + g_bridgePoolOffset;
+    g_bridgePoolOffset += 64; // 每个 bridge 最多 64 bytes
+    return p;
+}
+
+// 修复 ARM64 ADRP 指令的 PC-relative 偏移
+// ADRP 格式: [31:24]=1x01_0000 [23:5]=immhi [4:0]=Rd
+// imm = SignExtend(immhi:immlo) << 12
+// Result = (PC & ~0xFFF) + imm
+static bool fixupADRP(uint32_t *insn, uintptr_t origPC, uintptr_t newPC) {
+    uint32_t v = *insn;
+    if ((v & 0x9F000000) != 0x90000000) return false; // 不是 ADRP
+
+    int64_t immhi = (v >> 5) & 0x7FFFF;
+    int64_t immlo = (v >> 29) & 0x3;
+    int64_t imm = (immhi << 2) | immlo;
+    if (imm & 0x100000) imm -= 0x200000; // 符号扩展 21 位
+
+    // 原始 ADRP 的目标地址
+    uint64_t target = (origPC & ~(uint64_t)0xFFF) + (imm << 12);
+
+    // 新的偏移
+    int64_t newImm = ((int64_t)target - (int64_t)(newPC & ~(uint64_t)0xFFF)) >> 12;
+    if (newImm < -0x100000 || newImm > 0x0FFFFF) {
+        LOGH("[BRIDGE] ADRP fixup out of range: newImm=%lld", (long long)newImm);
+        return false; // 超出 ADRP 的 21 位范围
+    }
+
+    uint32_t newImmLo = (uint32_t)(newImm & 0x3);
+    uint32_t newImmHi = (uint32_t)((newImm >> 2) & 0x7FFFF);
+    *insn = (v & 0x9F00001F) | (newImmLo << 29) | (newImmHi << 5);
+    return true;
+}
+
+// 修复 ARM64 B/BL 指令的 PC-relative 偏移
+static bool fixupBBL(uint32_t *insn, uintptr_t origPC, uintptr_t newPC) {
+    uint32_t v = *insn;
+    bool isBL = (v & 0xFC000000) == 0x94000000;
+    bool isB  = (v & 0xFC000000) == 0x14000000;
+    if (!isB && !isBL) return false;
+
+    int64_t offset = v & 0x3FFFFFF;
+    if (offset & 0x2000000) offset -= 0x4000000; // 符号扩展 26 位
+
+    int64_t target = origPC + (offset << 2);
+    int64_t newOffset = (target - (int64_t)newPC) >> 2;
+    if (newOffset < -0x2000000 || newOffset > 0x1FFFFFF) {
+        LOGH("[BRIDGE] B/BL fixup out of range");
+        return false;
+    }
+
+    *insn = (v & 0xFC000000) | ((uint32_t)newOffset & 0x3FFFFFF);
+    return true;
+}
+
+// 修复 ARM64 LDR (literal) 指令的 PC-relative 偏移
+static bool fixupLDRLiteral(uint32_t *insn, uintptr_t origPC, uintptr_t newPC) {
+    uint32_t v = *insn;
+    // LDR Wt, label: 0x18xxxxxx  (opc=00)
+    // LDR Xt, label: 0x58xxxxxx  (opc=01, 64-bit)
+    // LDRSW Xt, label: 0x98xxxxxx (opc=10)
+    bool isLDR = (v & 0x3B000000) == 0x18000000;
+    if (!isLDR) return false;
+
+    int64_t offset = v & 0x7FFFF;
+    if (offset & 0x40000) offset -= 0x80000; // 符号扩展 19 位
+
+    int64_t target = origPC + (offset << 2);
+    int64_t newOffset = (target - (int64_t)newPC) >> 2;
+    if (newOffset < -0x40000 || newOffset > 0x3FFFF) {
+        LOGH("[BRIDGE] LDR literal fixup out of range");
+        return false;
+    }
+
+    *insn = (v & 0xFF000000) | ((uint32_t)newOffset & 0x7FFFF);
+    return true;
+}
+
+// 创建 bridge: 复制原始指令并修复 PC-relative，然后跳回原函数+16
+static void *createBridge(void *targetFn, const uint8_t *saved) {
+    uint8_t *bridge = allocBridge();
+    if (!bridge) return nullptr;
+
+    uintptr_t origPC = (uintptr_t)targetFn;
+    int pos = 0;
+
+    for (int i = 0; i < 4; i++) {
+        uint32_t insn;
+        memcpy(&insn, saved + i * 4, 4);
+        uintptr_t insnOrigPC = origPC + i * 4;
+        uintptr_t insnNewPC = (uintptr_t)bridge + pos;
+
+        // 尝试修复 PC-relative 指令
+        if ((insn & 0x9F000000) == 0x90000000) {
+            // ADRP
+            if (!fixupADRP(&insn, insnOrigPC, insnNewPC)) {
+                LOGH("[BRIDGE] Failed to fixup ADRP at insn %d, falling back to unpatch/repatch", i);
+                return nullptr;
+            }
+        } else if ((insn & 0xFC000000) == 0x14000000 || (insn & 0xFC000000) == 0x94000000) {
+            // B or BL
+            if (!fixupBBL(&insn, insnOrigPC, insnNewPC)) {
+                LOGH("[BRIDGE] Failed to fixup B/BL at insn %d", i);
+                return nullptr;
+            }
+        } else if ((insn & 0x3B000000) == 0x18000000) {
+            // LDR (literal)
+            if (!fixupLDRLiteral(&insn, insnOrigPC, insnNewPC)) {
+                LOGH("[BRIDGE] Failed to fixup LDR literal at insn %d", i);
+                return nullptr;
+            }
+        }
+        // 其他指令 (STP, MOV, SUB, ADD 等) 不是 PC-relative，直接复制
+
+        memcpy(bridge + pos, &insn, 4);
+        pos += 4;
+    }
+
+    // 追加跳转回原始函数 +16:
+    //   LDR X16, [PC, #8]
+    //   BR X16
+    //   .quad (targetFn + 16)
+    const uint32_t ldrInst = 0x58000050; // LDR X16, [PC, #8]
+    const uint32_t brInst  = 0xD61F0200; // BR X16
+    uint64_t retAddr = (uint64_t)targetFn + 16;
+    memcpy(bridge + pos, &ldrInst, 4);
+    memcpy(bridge + pos + 4, &brInst, 4);
+    memcpy(bridge + pos + 8, &retAddr, 8);
+    pos += 16;
+
+    __builtin___clear_cache((char *)bridge, (char *)bridge + pos);
+    return bridge;
+}
 
 static bool installInlineHook(void *targetFn, void *hookFn, void **origFn, int idx) {
     if (!targetFn || !hookFn || !origFn || idx < 0 || idx >= 8) return false;
@@ -419,7 +563,15 @@ static bool installInlineHook(void *targetFn, void *hookFn, void **origFn, int i
     g_inlineHooks[idx].targetFn = targetFn;
     g_inlineHooks[idx].hookFn = hookFn;
 
-    // 2. 修改目标函数页面为可写
+    // 2. 创建 bridge (跳板) 用于调用原始函数
+    void *bridge = createBridge(targetFn, g_inlineHooks[idx].saved);
+    if (!bridge) {
+        LOGH("[INLINE] Bridge creation failed for idx=%d, skipping inline hook", idx);
+        return false;
+    }
+    g_inlineHooks[idx].bridge = bridge;
+
+    // 3. 修改目标函数页面为可写
     long pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t page = (uintptr_t)targetFn & ~(uintptr_t)(pageSize - 1);
     if (mprotect((void *)page, (size_t)pageSize, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
@@ -427,7 +579,7 @@ static bool installInlineHook(void *targetFn, void *hookFn, void **origFn, int i
         return false;
     }
 
-    // 3. 写入 trampoline 到目标函数入口
+    // 4. 写入 trampoline 到目标函数入口
     const uint32_t ldrInst = 0x58000050; // LDR X16, [PC, #8]
     const uint32_t brInst  = 0xD61F0200; // BR X16
     uint64_t hookAddr = (uint64_t)hookFn;
@@ -436,33 +588,12 @@ static bool installInlineHook(void *targetFn, void *hookFn, void **origFn, int i
     memcpy((uint8_t *)targetFn + 8, &hookAddr, 8);
     __builtin___clear_cache((char *)targetFn, (char *)targetFn + 16);
 
-    // 4. orig_fn 指向目标函数本身 (调用前临时恢复原始指令)
-    *origFn = targetFn;
+    // 5. orig_fn 指向 bridge (线程安全，无需 unpatch/repatch)
+    *origFn = bridge;
     g_inlineHooks[idx].installed = true;
 
-    LOGH("[INLINE] Patched %p -> %p (idx=%d)", targetFn, hookFn, idx);
+    LOGH("[INLINE] Patched %p -> %p bridge=%p (idx=%d)", targetFn, hookFn, bridge, idx);
     return true;
-}
-
-// 临时取消 inline patch (恢复原始指令)
-static void unpatchInline(int idx) {
-    if (idx < 0 || idx >= 8 || !g_inlineHooks[idx].installed) return;
-    memcpy(g_inlineHooks[idx].targetFn, g_inlineHooks[idx].saved, 16);
-    __builtin___clear_cache((char *)g_inlineHooks[idx].targetFn,
-                            (char *)g_inlineHooks[idx].targetFn + 16);
-}
-
-// 重新写入 inline patch (trampoline)
-static void repatchInline(int idx) {
-    if (idx < 0 || idx >= 8 || !g_inlineHooks[idx].installed) return;
-    const uint32_t ldrInst = 0x58000050;
-    const uint32_t brInst  = 0xD61F0200;
-    uint64_t hookAddr = (uint64_t)g_inlineHooks[idx].hookFn;
-    memcpy(g_inlineHooks[idx].targetFn, &ldrInst, 4);
-    memcpy((uint8_t *)g_inlineHooks[idx].targetFn + 4, &brInst, 4);
-    memcpy((uint8_t *)g_inlineHooks[idx].targetFn + 8, &hookAddr, 8);
-    __builtin___clear_cache((char *)g_inlineHooks[idx].targetFn,
-                            (char *)g_inlineHooks[idx].targetFn + 16);
 }
 
 // ==================== 多策略 Hook 注册 ====================
@@ -737,31 +868,28 @@ void register_trace_hooks() {
         }
     }
 
-    LOGH("Registered %d/8 hooks via methodPointer+vtable (g_forceFuncOpen=%d). Inline patching DISABLED.", ok, g_forceFuncOpen ? 1 : 0);
+    LOGH("Registered %d/8 hooks via methodPointer+vtable (g_forceFuncOpen=%d). Now installing inline hooks with bridge...", ok, g_forceFuncOpen ? 1 : 0);
 
-    // ==================== Inline Code Patching ====================
-    // DISABLED: inline patching 直接修改目标函数入口机器码
-    // 实测 methodPointer+vtable 已经足够让 hook 触发 (H1/H6 均正常触发)
-    // inline patching 在多线程环境下 unpatch/repatch 不安全，可能导致:
-    //   1. 函数执行被破坏 (另一个线程执行到半修改的指令)
-    //   2. 游戏逻辑卡住 (某些函数的 prologue 被破坏后恢复不完整)
-    // 如果确认 methodPointer+vtable 不够，可以设置 g_useInlinePatch=true
-    static bool g_useInlinePatch = false;
-    if (g_useInlinePatch) {
-        for (int i = 0; i < 8; i++) {
-            void *targetFn = *entries[i].orig_fn;
-            if (!targetFn) {
-                LOGH("[INLINE-%s] SKIP: orig_fn is null (method not found)", entries[i].tag);
-                continue;
-            }
-            if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn, i)) {
-                LOGH("[INLINE-%s] OK at %p (actual methodPointer)", entries[i].tag, targetFn);
-            } else {
-                LOGH("[INLINE-%s] FAILED at %p", entries[i].tag, targetFn);
-            }
+    // ==================== Inline Code Patching (with Bridge) ====================
+    // methodPointer+vtable 对 AOT 编译的直接调用无效 (il2cpp 去虚化)
+    // 必须用 inline patching 修改函数入口机器码才能拦截所有调用
+    // 使用 bridge (跳板) 替代 unpatch/repatch，线程安全:
+    //   - bridge 复制原始指令并修复 PC-relative，跳回原函数+16
+    //   - hook 回调通过 bridge 调用原始函数，无需临时恢复指令
+    //   - inline patch 永远不被移除，多线程安全
+    for (int i = 0; i < 8; i++) {
+        void *targetFn = *entries[i].orig_fn;
+        if (!targetFn) {
+            LOGH("[INLINE-%s] SKIP: orig_fn is null (method not found)", entries[i].tag);
+            continue;
+        }
+        if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn, i)) {
+            LOGH("[INLINE-%s] OK at %p bridge=%p", entries[i].tag, targetFn, *entries[i].orig_fn);
+        } else {
+            LOGH("[INLINE-%s] FAILED at %p (bridge creation failed, hook may not trigger for direct calls)", entries[i].tag, targetFn);
         }
     }
 
-    LOGH("All hooks installed (methodPointer+vtable, inline=%s). g_forceFuncOpen=%d. Waiting for game login...",
-         g_useInlinePatch ? "ON" : "OFF", g_forceFuncOpen ? 1 : 0);
+    LOGH("All hooks installed (methodPointer+vtable+inline-bridge). g_forceFuncOpen=%d. Waiting for game login...",
+         g_forceFuncOpen ? 1 : 0);
 }
