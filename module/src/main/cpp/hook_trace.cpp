@@ -5,6 +5,8 @@
 // 用法: adb logcat -s HookTrace
 //
 // 原理: 通过 il2cpp API 获取 MethodInfo，替换 methodPointer 实现 hook
+//       同时 patch Il2CppClass 的 vtable 条目（虚方法分派走 vtable）
+//       最终使用 inline code patching（修改目标函数入口机器码）确保可靠 hook
 //       不依赖任何 inline hook 框架（Dobby 等），更稳定
 //
 // 多策略查找: 1. namespace+className 精确匹配
@@ -22,6 +24,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <errno.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 // ==================== il2cpp API 函数指针 ====================
 // 这些在 il2cpp_dump.cpp 中定义，这里只 extern 声明我们需要的几个
@@ -265,6 +270,133 @@ static void hook_H7(void *self, int32_t result, void *msg) {
          result, cmd, cmd);
 }
 
+// ==================== VTable Patch ====================
+//
+// il2cpp 虚方法通过 vtable 分派:
+//   obj->klass->vtable[slot].methodPointer(args)
+// 仅替换 MethodInfo.methodPointer 不够，还需 patch vtable 中的副本
+//
+// VirtualInvokeData 布局 (64-bit):
+//   offset 0: Il2CppMethodPointer methodPointer  (8 bytes)
+//   offset 8: const MethodInfo* method            (8 bytes)
+//
+// Il2CppClass 的 vtable 在结构体末尾 (inline 变长数组)
+// 我们通过扫描 klass 内存中匹配 {origPtr, methodInfo*} 的对来定位并 patch
+
+static bool makePageWritable(void *addr) {
+    long pageSize = sysconf(_SC_PAGESIZE);
+    uintptr_t page = (uintptr_t)addr & ~(uintptr_t)(pageSize - 1);
+    return mprotect((void *)page, (size_t)pageSize, PROT_READ | PROT_WRITE | PROT_EXEC) == 0;
+}
+
+// 扫描 Il2CppClass 内存，找到 vtable 中匹配的 VirtualInvokeData 并 patch
+static int patchClassVtable(Il2CppClass *klass, const MethodInfo *targetMethod,
+                            void *origPtr, void *newPtr) {
+    if (!klass || !targetMethod || !origPtr || !newPtr) return 0;
+
+    // 确保 klass 所在页面可写
+    makePageWritable(klass);
+
+    int patched = 0;
+    void **scan = (void **)klass;
+
+    // VirtualInvokeData = { methodPointer, MethodInfo* } = 16 bytes on 64-bit
+    // 扫描 klass 结构体，查找 origPtr 后面紧跟 targetMethod 的位置
+    // Il2CppClass 固定部分约 200-400 bytes，vtable 在末尾
+    // 保守扫描 512 个指针宽度 (4096 bytes)
+    for (int i = 0; i < 512; i++) {
+        if (scan[i] == origPtr && (i + 1) < 512 && scan[i + 1] == (void *)targetMethod) {
+            scan[i] = newPtr;
+            patched++;
+            LOGH("[VTABLE] Patched at klass+%d (slot %d)", (int)(i * sizeof(void *)), i / 2);
+        }
+    }
+
+    return patched;
+}
+
+// ==================== Inline Code Patching (ARM64) ====================
+//
+// methodPointer 替换和 vtable patching 都可能因为 il2cpp 的分派机制而失效
+// (例如: thunk、interface dispatch、编译器内联等)
+//
+// Inline code patching 直接修改目标函数入口的机器码，写入跳转到 hook 的指令
+// 这是最可靠的方式: 无论 il2cpp 如何分派方法调用，最终都会执行到函数入口
+//
+// ARM64 trampoline (16 bytes):
+//   LDR X16, [PC, #8]    ; 加载 8 字节后的 hook 地址到 X16
+//   BR X16                ; 跳转到 X16 (hook 函数)
+//   .quad hook_address    ; hook 函数地址 (8 bytes)
+//
+// Bridge 函数 (32 bytes):
+//   <原始函数前 16 bytes>  ; 保存的原始指令
+//   LDR X16, [PC, #8]    ; 加载原始函数 +16 的地址
+//   BR X16                ; 跳转回原始函数 +16
+//   .quad orig+16_addr    ; 原始函数 +16 的地址
+//
+// 调用流程:
+//   任何方式调用原函数 -> 入口处被 patch 跳转到 hook -> hook 调用 orig(bridge)
+//   -> bridge 执行保存的原始指令 -> 跳转回原函数 +16 继续执行
+
+static bool installInlineHook(void *targetFn, void *hookFn, void **origFn) {
+    if (!targetFn || !hookFn || !origFn) return false;
+
+    // 1. 保存原始 16 bytes
+    uint8_t saved[16];
+    memcpy(saved, targetFn, 16);
+
+    // 2. 分配 bridge 内存 (可读/可写/可执行)
+    void *bridge = mmap(nullptr, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (bridge == MAP_FAILED) {
+        LOGH("[INLINE] mmap bridge failed: %s", strerror(errno));
+        return false;
+    }
+
+    // 3. 构建 bridge: 原始指令 + 跳转回原函数+16
+    //    bridge[0:16]  = 保存的原始指令
+    //    bridge[16:20] = LDR X16, [PC, #8]
+    //    bridge[20:24] = BR X16
+    //    bridge[24:32] = targetFn + 16 的地址
+    memcpy(bridge, saved, 16);
+
+    const uint32_t ldrInst = 0x58000050; // LDR X16, label (PC+8)
+    const uint32_t brInst  = 0xD61F0200; // BR X16
+    uint64_t retAddr = (uint64_t)targetFn + 16;
+
+    memcpy((uint8_t *)bridge + 16, &ldrInst, 4);
+    memcpy((uint8_t *)bridge + 20, &brInst, 4);
+    memcpy((uint8_t *)bridge + 24, &retAddr, 8);
+
+    __builtin___clear_cache((char *)bridge, (char *)bridge + 32);
+
+    // 4. 修改目标函数页面为可写
+    long pageSize = sysconf(_SC_PAGESIZE);
+    uintptr_t page = (uintptr_t)targetFn & ~(uintptr_t)(pageSize - 1);
+    if (mprotect((void *)page, (size_t)pageSize, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        LOGH("[INLINE] mprotect target page %p failed: %s", (void *)page, strerror(errno));
+        munmap(bridge, 4096);
+        return false;
+    }
+
+    // 5. 写入 trampoline 到目标函数入口
+    //    targetFn[0:4]   = LDR X16, [PC, #8]
+    //    targetFn[4:8]   = BR X16
+    //    targetFn[8:16]  = hookFn 地址
+    uint64_t hookAddr = (uint64_t)hookFn;
+    memcpy(targetFn, &ldrInst, 4);
+    memcpy((uint8_t *)targetFn + 4, &brInst, 4);
+    memcpy((uint8_t *)targetFn + 8, &hookAddr, 8);
+
+    __builtin___clear_cache((char *)targetFn, (char *)targetFn + 16);
+
+    // 6. 更新 orig_fn 为 bridge (调用原始函数时走 bridge，绕过 inline patch)
+    *origFn = bridge;
+
+    LOGH("[INLINE] Patched %p -> %p (bridge=%p)", targetFn, hookFn, bridge);
+    return true;
+}
+
 // ==================== 多策略 Hook 注册 ====================
 
 struct HookEntry {
@@ -339,6 +471,31 @@ static void diagnoseClasses(const char *keyword) {
     }
 }
 
+// 在指定 klass 上执行 hook: 替换 methodPointer + patch vtable
+static bool hookOnClass(Il2CppClass *klass, const HookEntry &entry) {
+    for (int k = 0; entry.argCounts[k] >= 0; k++) {
+        auto method = il2cpp_class_get_method_from_name(klass, entry.method, entry.argCounts[k]);
+        if (!method) continue;
+
+        void *origPtr = (void *)method->methodPointer;
+
+        // 1. 替换 MethodInfo.methodPointer
+        const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
+        *entry.orig_fn = origPtr;
+
+        // 2. Patch vtable 中的副本
+        int vtablePatched = patchClassVtable(klass, method, origPtr, entry.fake_fn);
+
+        auto ns = il2cpp_class_get_namespace(klass);
+        auto name = il2cpp_class_get_name(klass);
+        LOGH("[%s OK] %s.%s.%s(argCount=%d) @ %p -> %p vtable_patched=%d",
+             entry.tag, ns ? ns : "", name ? name : "", entry.method,
+             entry.argCounts[k], origPtr, entry.fake_fn, vtablePatched);
+        return true;
+    }
+    return false;
+}
+
 // 策略1: namespace+className 精确匹配
 static bool hookByExactName(const HookEntry &entry) {
     auto domain = il2cpp_domain_get();
@@ -360,18 +517,8 @@ static bool hookByExactName(const HookEntry &entry) {
             if (!ns || !name) continue;
             if (strcmp(ns, entry.ns) != 0 || strcmp(name, entry.cls) != 0) continue;
 
-            // 找到类，尝试不同 argCount
-            for (int k = 0; entry.argCounts[k] >= 0; k++) {
-                auto method = il2cpp_class_get_method_from_name(klass, entry.method, entry.argCounts[k]);
-                if (method) {
-                    *entry.orig_fn = (void *)method->methodPointer;
-                    const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
-                    LOGH("[%s OK] %s.%s.%s(argCount=%d) @ %p -> %p",
-                         entry.tag, entry.ns, entry.cls, entry.method, entry.argCounts[k],
-                         *entry.orig_fn, entry.fake_fn);
-                    return true;
-                }
-            }
+            if (hookOnClass(klass, entry)) return true;
+
             LOGH("[%s WARN] Found class %s.%s but method '%s' not found with any argCount",
                  entry.tag, entry.ns, entry.cls, entry.method);
             return false;
@@ -403,17 +550,8 @@ static bool hookByClassNameOnly(const HookEntry &entry) {
             LOGH("[%s FALLBACK] Found %s.%s (expected %s.%s), trying method...",
                  entry.tag, ns ? ns : "", name, entry.ns, entry.cls);
 
-            for (int k = 0; entry.argCounts[k] >= 0; k++) {
-                auto method = il2cpp_class_get_method_from_name(klass, entry.method, entry.argCounts[k]);
-                if (method) {
-                    *entry.orig_fn = (void *)method->methodPointer;
-                    const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
-                    LOGH("[%s OK] %s.%s.%s(argCount=%d) @ %p -> %p",
-                         entry.tag, ns ? ns : "", entry.cls, entry.method, entry.argCounts[k],
-                         *entry.orig_fn, entry.fake_fn);
-                    return true;
-                }
-            }
+            if (hookOnClass(klass, entry)) return true;
+
             LOGH("[%s WARN] Found class %s.%s but method '%s' not found",
                  entry.tag, ns ? ns : "", name, entry.method);
             return false;
@@ -449,13 +587,21 @@ static bool hookByRVA(const HookEntry &entry) {
             const MethodInfo *method = nullptr;
             while ((method = il2cpp_class_get_methods(klass, &iter)) != nullptr) {
                 if ((void *)method->methodPointer == targetAddr) {
+                    void *origPtr = (void *)method->methodPointer;
+
+                    // 替换 MethodInfo.methodPointer
+                    const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
+                    *entry.orig_fn = origPtr;
+
+                    // Patch vtable
+                    int vtablePatched = patchClassVtable(klass, method, origPtr, entry.fake_fn);
+
                     auto ns = il2cpp_class_get_namespace(klass);
                     auto name = il2cpp_class_get_name(klass);
-                    *entry.orig_fn = (void *)method->methodPointer;
-                    const_cast<MethodInfo *>(method)->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
-                    LOGH("[%s OK-RVA] %s.%s @ %p -> %p [RVA=0x%llx]",
+                    LOGH("[%s OK-RVA] %s.%s @ %p -> %p vtable_patched=%d [RVA=0x%llx]",
                          entry.tag, ns ? ns : "", name ? name : "?",
-                         *entry.orig_fn, entry.fake_fn, (unsigned long long)entry.rva);
+                         origPtr, entry.fake_fn, vtablePatched,
+                         (unsigned long long)entry.rva);
                     return true;
                 }
             }
@@ -522,5 +668,23 @@ void register_trace_hooks() {
         }
     }
 
-    LOGH("Registered %d/7 hooks. Waiting for game login...", ok);
+    LOGH("Registered %d/7 hooks via methodPointer+vtable. Now applying inline patches...", ok);
+
+    // ==================== Inline Code Patching ====================
+    // methodPointer 替换和 vtable patching 可能因 il2cpp 分派机制而失效
+    // inline patching 直接修改目标函数入口机器码，是最可靠的方式
+    // 必须在 methodPointer 替换之后执行，因为 inline patch 会更新 orig_fn 为 bridge
+    for (int i = 0; i < 7; i++) {
+        if (entries[i].rva == 0) continue;
+        void *targetFn = (void *)(g_il2cpp_base + entries[i].rva);
+        if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn)) {
+            LOGH("[INLINE-%s] OK at %p (RVA=0x%llx)", entries[i].tag, targetFn,
+                 (unsigned long long)entries[i].rva);
+        } else {
+            LOGH("[INLINE-%s] FAILED at %p (RVA=0x%llx), falling back to methodPointer",
+                 entries[i].tag, targetFn, (unsigned long long)entries[i].rva);
+        }
+    }
+
+    LOGH("All hooks installed (methodPointer+vtable+inline). Waiting for game login...");
 }
