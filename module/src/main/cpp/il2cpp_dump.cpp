@@ -25,6 +25,10 @@
 
 static uint64_t il2cpp_base = 0;
 
+uint64_t get_il2cpp_base() {
+    return il2cpp_base;
+}
+
 void init_il2cpp_api(void *handle) {
 #define DO_API(r, n, p) {                      \
     n = (r (*) p)xdl_sym(handle, #n, nullptr); \

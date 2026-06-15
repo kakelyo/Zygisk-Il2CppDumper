@@ -13,4 +13,8 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
+// Hook trace log tag - use "adb logcat -s HookTrace" to filter
+#define LOGH_TAG "HookTrace"
+#define LOGH(...) __android_log_print(ANDROID_LOG_INFO, LOGH_TAG, __VA_ARGS__)
+
 #endif //ZYGISK_IL2CPPDUMPER_LOG_H

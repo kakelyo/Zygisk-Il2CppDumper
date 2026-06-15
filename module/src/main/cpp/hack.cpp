@@ -4,6 +4,7 @@
 
 #include "hack.h"
 #include "il2cpp_dump.h"
+#include "hook_trace.h"
 #include "log.h"
 #include "xdl.h"
 #include <cstring>
@@ -25,6 +26,7 @@ void hack_start(const char *game_data_dir) {
             load = true;
             il2cpp_api_init(handle);
             il2cpp_dump(game_data_dir);
+            register_trace_hooks();
             break;
         } else {
             sleep(1);

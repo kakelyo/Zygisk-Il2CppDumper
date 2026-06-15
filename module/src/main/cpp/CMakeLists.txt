@@ -29,16 +29,29 @@ set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${LINKER_FLAGS}")
 
 include_directories(
         xdl/include
+        dobby/include
 )
 
 aux_source_directory(xdl xdl-src)
+
+# Dobby 作为子项目
+set(DOBBY_DEBUG OFF CACHE BOOL "" FORCE)
+set(NearBranch ON CACHE BOOL "" FORCE)
+set(FullFloatingPointRegisterPack OFF CACHE BOOL "" FORCE)
+set(Plugin.SymbolResolver OFF CACHE BOOL "" FORCE)
+set(Plugin.ImportTableReplace OFF CACHE BOOL "" FORCE)
+set(Plugin.Android.BionicLinkerUtil OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
+add_subdirectory(dobby)
 
 add_library(${MODULE_NAME} SHARED
         main.cpp
         hack.cpp
         il2cpp_dump.cpp
+        hook_trace.cpp
         ${xdl-src})
-target_link_libraries(${MODULE_NAME} log)
+target_link_libraries(${MODULE_NAME} log dobby_static)
 
 if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_custom_command(TARGET ${MODULE_NAME} POST_BUILD
