@@ -504,11 +504,12 @@ static bool fixupLDRLiteral(uint32_t *insn, uintptr_t origPC, uintptr_t newPC) {
 // 两遍扫描: 第一遍计算每条指令展开后的大小，第二遍生成代码
 struct BridgeInsn {
     uint32_t orig;        // 原始指令
-    int expandedSize;     // 展开后的大小 (4 或 12 或 16)
-    uint8_t code[16];     // 展开后的代码
+    int expandedSize;     // 展开后的大小 (4 或 12 或 16 或 24)
+    uint8_t code[24];     // 展开后的代码
     bool isBL;            // 是否是 BL (需要特殊处理 LR)
     uint64_t blTarget;    // BL 的目标地址
     uint64_t blReturnIdx; // BL 返回后应执行的指令索引
+    int internalBranch;   // B/BL 目标在 patched 区域内的指令索引 (-1=不是)
 };
 
 static void *createBridge(void *targetFn, const uint8_t *saved) {
@@ -524,6 +525,7 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
         memcpy(&insn, saved + i * 4, 4);
         insns[i].orig = insn;
         insns[i].isBL = false;
+        insns[i].internalBranch = -1;
         uintptr_t insnOrigPC = origPC + i * 4;
 
         if ((insn & 0x9F000000) == 0x90000000) {
@@ -548,23 +550,32 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
                 LOGH("[BRIDGE] ADRP out of range at insn %d, replaced with LDR X%d + .quad", i, rd);
             }
         } else if ((insn & 0xFC000000) == 0x14000000) {
-            // B (unconditional branch) - 超出范围时用间接跳转
-            uint32_t fixed = insn;
-            if (fixupBBL(&fixed, insnOrigPC, 0)) {
-                memcpy(insns[i].code, &fixed, 4);
-                insns[i].expandedSize = 4;
+            // B (unconditional branch)
+            int64_t offset = insn & 0x3FFFFFF;
+            if (offset & 0x2000000) offset -= 0x4000000;
+            uint64_t target = insnOrigPC + (offset << 2);
+
+            // 检查目标是否在 patched 区域内 [origPC, origPC+16)
+            if (target >= origPC && target < origPC + 16) {
+                int targetIdx = (int)((target - origPC) / 4);
+                insns[i].internalBranch = targetIdx;
+                insns[i].expandedSize = 4; // 第二遍生成 B 指令跳到 bridge 内对应位置
+                LOGH("[BRIDGE] B at insn %d targets patched insn %d, will redirect within bridge", i, targetIdx);
             } else {
-                int64_t offset = insn & 0x3FFFFFF;
-                if (offset & 0x2000000) offset -= 0x4000000;
-                uint64_t target = insnOrigPC + (offset << 2);
-                // LDR X16, [PC, #8]; BR X16; .quad target (16 bytes)
-                const uint32_t ldrX16 = 0x58000050;
-                const uint32_t brX16 = 0xD61F0200;
-                memcpy(insns[i].code, &ldrX16, 4);
-                memcpy(insns[i].code + 4, &brX16, 4);
-                memcpy(insns[i].code + 8, &target, 8);
-                insns[i].expandedSize = 16;
-                LOGH("[BRIDGE] B out of range at insn %d, replaced with indirect branch", i);
+                uint32_t fixed = insn;
+                if (fixupBBL(&fixed, insnOrigPC, 0)) {
+                    memcpy(insns[i].code, &fixed, 4);
+                    insns[i].expandedSize = 4;
+                } else {
+                    // 超出范围，用间接跳转: LDR X16, [PC, #8]; BR X16; .quad target (16 bytes)
+                    const uint32_t ldrX16 = 0x58000050;
+                    const uint32_t brX16 = 0xD61F0200;
+                    memcpy(insns[i].code, &ldrX16, 4);
+                    memcpy(insns[i].code + 4, &brX16, 4);
+                    memcpy(insns[i].code + 8, &target, 8);
+                    insns[i].expandedSize = 16;
+                    LOGH("[BRIDGE] B out of range at insn %d, replaced with indirect branch", i);
+                }
             }
         } else if ((insn & 0xFC000000) == 0x94000000) {
             // BL (branch with link) - 需要特殊处理 LR
@@ -572,9 +583,17 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
             int64_t offset = insn & 0x3FFFFFF;
             if (offset & 0x2000000) offset -= 0x4000000;
             insns[i].blTarget = insnOrigPC + (offset << 2);
-            // BL 展开为: LDR X16, [PC, #?]; LDR LR, [PC, #?]; BR X16; .quad target; .quad return_addr
-            // 大小在第二遍确定（需要知道返回地址）
-            insns[i].expandedSize = 24; // 固定 24 bytes: 3条指令 + 2个.quad
+
+            // 检查目标是否在 patched 区域内
+            if (insns[i].blTarget >= origPC && insns[i].blTarget < origPC + 16) {
+                int targetIdx = (int)((insns[i].blTarget - origPC) / 4);
+                insns[i].internalBranch = targetIdx;
+                insns[i].isBL = false; // 不需要特殊 LR 处理，直接 B 即可
+                insns[i].expandedSize = 4;
+                LOGH("[BRIDGE] BL at insn %d targets patched insn %d, will redirect within bridge", i, targetIdx);
+            } else {
+                insns[i].expandedSize = 24; // 固定 24 bytes: 3条指令 + 2个.quad
+            }
         } else if ((insn & 0x3B000000) == 0x18000000) {
             // LDR (literal)
             uint32_t fixed = insn;
@@ -639,16 +658,27 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
             uintptr_t insnNewPC = (uintptr_t)bridge + pos;
 
             if (insns[i].expandedSize == 4) {
-                // 4 字节指令，可能需要修复 PC-relative
-                uint32_t fixed = insn;
-                if ((insn & 0x9F000000) == 0x90000000) {
-                    fixupADRP(&fixed, insnOrigPC, insnNewPC);
-                } else if ((insn & 0xFC000000) == 0x14000000) {
-                    fixupBBL(&fixed, insnOrigPC, insnNewPC);
-                } else if ((insn & 0x3B000000) == 0x18000000) {
-                    fixupLDRLiteral(&fixed, insnOrigPC, insnNewPC);
+                // 4 字节指令
+                if (insns[i].internalBranch >= 0) {
+                    // B/BL 目标在 patched 区域内，重定向到 bridge 中对应指令
+                    int targetIdx = insns[i].internalBranch;
+                    int64_t branchOffset = (offsets[targetIdx] - pos) / 4;
+                    uint32_t bInsn = 0x14000000 | (uint32_t)(branchOffset & 0x3FFFFFF);
+                    memcpy(bridge + pos, &bInsn, 4);
+                    LOGH("[BRIDGE] Internal branch at insn %d -> bridge insn %d (offset=%lld)",
+                         i, targetIdx, (long long)branchOffset);
+                } else {
+                    // 可能需要修复 PC-relative
+                    uint32_t fixed = insn;
+                    if ((insn & 0x9F000000) == 0x90000000) {
+                        fixupADRP(&fixed, insnOrigPC, insnNewPC);
+                    } else if ((insn & 0xFC000000) == 0x14000000) {
+                        fixupBBL(&fixed, insnOrigPC, insnNewPC);
+                    } else if ((insn & 0x3B000000) == 0x18000000) {
+                        fixupLDRLiteral(&fixed, insnOrigPC, insnNewPC);
+                    }
+                    memcpy(bridge + pos, &fixed, 4);
                 }
-                memcpy(bridge + pos, &fixed, 4);
             } else {
                 // 展开后的指令，PC-relative 已经通过间接方式处理
                 // 但 ADRP 展开中的 LDR Xd, [PC, #4] 需要确认偏移正确
