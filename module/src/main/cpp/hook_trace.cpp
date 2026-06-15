@@ -499,6 +499,60 @@ static bool fixupLDRLiteral(uint32_t *insn, uintptr_t origPC, uintptr_t newPC) {
     return true;
 }
 
+// 修复 ARM64 条件分支指令 (CBZ/CBNZ/B.cond) 的 PC-relative 偏移
+// CBZ:  0x34000000 | (imm19 << 5) | Rt  (32-bit)
+// CBNZ: 0x35000000 | (imm19 << 5) | Rt  (32-bit)
+// CBZ:  0xB4000000 | (imm19 << 5) | Rt  (64-bit)
+// CBNZ: 0xB5000000 | (imm19 << 5) | Rt  (64-bit)
+// B.cond: 0x54000000 | (imm19 << 5) | cond
+static bool fixupCondBranch(uint32_t *insn, uintptr_t origPC, uintptr_t newPC) {
+    uint32_t v = *insn;
+    bool isCBZ32  = (v & 0x7E000000) == 0x34000000;
+    bool isCBNZ32 = (v & 0x7E000000) == 0x35000000;
+    bool isCBZ64  = (v & 0x7E000000) == 0xB4000000;
+    bool isCBNZ64 = (v & 0x7E000000) == 0xB5000000;
+    bool isBcond  = (v & 0xFF000000) == 0x54000000;
+    if (!isCBZ32 && !isCBNZ32 && !isCBZ64 && !isCBNZ64 && !isBcond) return false;
+
+    int64_t offset = (v >> 5) & 0x7FFFF;
+    if (offset & 0x40000) offset -= 0x80000; // 符号扩展 19 位
+
+    int64_t target = origPC + (offset << 2);
+    int64_t newOffset = (target - (int64_t)newPC) >> 2;
+    if (newOffset < -0x40000 || newOffset > 0x3FFFF) {
+        return false; // 超出 19 位范围
+    }
+
+    *insn = (v & 0xFF00001F) | (((uint32_t)newOffset & 0x7FFFF) << 5);
+    return true;
+}
+
+// 获取条件分支指令的目标地址，返回 0 表示不是条件分支
+static uint64_t getCondBranchTarget(uint32_t insn, uintptr_t origPC) {
+    bool isCBZ32  = (insn & 0x7E000000) == 0x34000000;
+    bool isCBNZ32 = (insn & 0x7E000000) == 0x35000000;
+    bool isCBZ64  = (insn & 0x7E000000) == 0xB4000000;
+    bool isCBNZ64 = (insn & 0x7E000000) == 0xB5000000;
+    bool isBcond  = (insn & 0xFF000000) == 0x54000000;
+    if (!isCBZ32 && !isCBNZ32 && !isCBZ64 && !isCBNZ64 && !isBcond) return 0;
+
+    int64_t offset = (insn >> 5) & 0x7FFFF;
+    if (offset & 0x40000) offset -= 0x80000;
+    return origPC + (offset << 2);
+}
+
+// 反转条件分支指令的条件 (CBZ<->CBNZ, 其他不变)
+static uint32_t invertCondBranch(uint32_t insn) {
+    // CBZ 32-bit: 0x34 <-> CBNZ 32-bit: 0x35
+    if ((insn & 0x7E000000) == 0x34000000)
+        return (insn ^ 0x01000000); // bit 24 翻转
+    // CBZ 64-bit: 0xB4 <-> CBNZ 64-bit: 0xB5
+    if ((insn & 0x7E000000) == 0xB4000000)
+        return (insn ^ 0x01000000); // bit 24 翻转
+    // B.cond: 无法简单反转，返回 0 表示不支持
+    return 0;
+}
+
 // 创建 bridge: 复制原始指令并修复 PC-relative，然后跳回原函数+16
 // 对于超出修复范围的 PC-relative 指令，用间接跳转替代
 // 两遍扫描: 第一遍计算每条指令展开后的大小，第二遍生成代码
@@ -615,9 +669,53 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
                 LOGH("[BRIDGE] LDR literal out of range at insn %d, replaced with indirect load", i);
             }
         } else {
-            // 非 PC-relative 指令，直接复制
-            memcpy(insns[i].code, &insn, 4);
-            insns[i].expandedSize = 4;
+            // 检查是否是条件分支 (CBZ/CBNZ/B.cond)
+            uint64_t condTarget = getCondBranchTarget(insn, insnOrigPC);
+            if (condTarget != 0) {
+                // 条件分支指令
+                if (condTarget >= origPC && condTarget < origPC + 16) {
+                    // 目标在 patched 区域内，重定向到 bridge 中对应位置
+                    int targetIdx = (int)((condTarget - origPC) / 4);
+                    insns[i].internalBranch = targetIdx;
+                    insns[i].expandedSize = 4;
+                    LOGH("[BRIDGE] CondBranch at insn %d targets patched insn %d, will redirect within bridge", i, targetIdx);
+                } else {
+                    // 目标在 patched 区域外，尝试修复偏移
+                    uint32_t fixed = insn;
+                    if (fixupCondBranch(&fixed, insnOrigPC, 0)) {
+                        // 先用 origPC 估算，第二遍再精确修复
+                        memcpy(insns[i].code, &fixed, 4);
+                        insns[i].expandedSize = 4;
+                    } else {
+                        // 超出修复范围，用反转条件 + 间接跳转替代
+                        // CBZ target -> CBNZ +8; LDR X16, [PC, #8]; BR X16; .quad target
+                        // CBNZ target -> CBZ +8; LDR X16, [PC, #8]; BR X16; .quad target
+                        // B.cond target -> 无法反转，暂不支持
+                        uint32_t inverted = invertCondBranch(insn);
+                        if (inverted != 0) {
+                            // 反转条件，跳过间接跳转 (offset=2, 即 +8 bytes)
+                            uint32_t invertedBranch = (inverted & 0xFF00001F) | (2 << 5);
+                            const uint32_t ldrX16 = 0x58000050;
+                            const uint32_t brX16 = 0xD61F0200;
+                            memcpy(insns[i].code, &invertedBranch, 4);
+                            memcpy(insns[i].code + 4, &ldrX16, 4);
+                            memcpy(insns[i].code + 8, &brX16, 4);
+                            memcpy(insns[i].code + 12, &condTarget, 8);
+                            insns[i].expandedSize = 20;
+                            LOGH("[BRIDGE] CondBranch at insn %d out of range, replaced with inverted + indirect branch", i);
+                        } else {
+                            // B.cond 超出范围，无法处理，直接复制（会导致错误跳转）
+                            memcpy(insns[i].code, &insn, 4);
+                            insns[i].expandedSize = 4;
+                            LOGH("[BRIDGE] WARNING: B.cond at insn %d out of range, cannot fixup!", i);
+                        }
+                    }
+                }
+            } else {
+                // 非 PC-relative 指令，直接复制
+                memcpy(insns[i].code, &insn, 4);
+                insns[i].expandedSize = 4;
+            }
         }
     }
 
@@ -660,13 +758,24 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
             if (insns[i].expandedSize == 4) {
                 // 4 字节指令
                 if (insns[i].internalBranch >= 0) {
-                    // B/BL 目标在 patched 区域内，重定向到 bridge 中对应指令
+                    // B/BL/CondBranch 目标在 patched 区域内，重定向到 bridge 中对应指令
                     int targetIdx = insns[i].internalBranch;
                     int64_t branchOffset = (offsets[targetIdx] - pos) / 4;
-                    uint32_t bInsn = 0x14000000 | (uint32_t)(branchOffset & 0x3FFFFFF);
-                    memcpy(bridge + pos, &bInsn, 4);
-                    LOGH("[BRIDGE] Internal branch at insn %d -> bridge insn %d (offset=%lld)",
-                         i, targetIdx, (long long)branchOffset);
+                    uint64_t condTarget = getCondBranchTarget(insn, insnOrigPC);
+                    if (condTarget != 0) {
+                        // 条件分支: 修复偏移，保持条件不变
+                        uint32_t fixed = insn;
+                        fixed = (fixed & 0xFF00001F) | (((uint32_t)branchOffset & 0x7FFFF) << 5);
+                        memcpy(bridge + pos, &fixed, 4);
+                        LOGH("[BRIDGE] Internal CondBranch at insn %d -> bridge insn %d (offset=%lld)",
+                             i, targetIdx, (long long)branchOffset);
+                    } else {
+                        // 无条件 B
+                        uint32_t bInsn = 0x14000000 | (uint32_t)(branchOffset & 0x3FFFFFF);
+                        memcpy(bridge + pos, &bInsn, 4);
+                        LOGH("[BRIDGE] Internal branch at insn %d -> bridge insn %d (offset=%lld)",
+                             i, targetIdx, (long long)branchOffset);
+                    }
                 } else {
                     // 可能需要修复 PC-relative
                     uint32_t fixed = insn;
@@ -676,6 +785,8 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
                         fixupBBL(&fixed, insnOrigPC, insnNewPC);
                     } else if ((insn & 0x3B000000) == 0x18000000) {
                         fixupLDRLiteral(&fixed, insnOrigPC, insnNewPC);
+                    } else if (getCondBranchTarget(insn, insnOrigPC) != 0) {
+                        fixupCondBranch(&fixed, insnOrigPC, insnNewPC);
                     }
                     memcpy(bridge + pos, &fixed, 4);
                 }
