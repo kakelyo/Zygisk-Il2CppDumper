@@ -22,7 +22,7 @@
 // 这些在 il2cpp_dump.cpp 中定义，这里只 extern 声明我们需要的几个
 
 extern Il2CppDomain *(*il2cpp_domain_get)();
-extern const Il2CppAssembly *(*il2cpp_domain_get_assemblies)(const Il2CppDomain *domain, size_t *size);
+extern const Il2CppAssembly **(*il2cpp_domain_get_assemblies)(const Il2CppDomain *domain, size_t *size);
 extern Il2CppImage *(*il2cpp_assembly_get_image)(const Il2CppAssembly *assembly);
 extern Il2CppClass *(*il2cpp_class_from_name)(const Il2CppImage *image, const char *namespaze, const char *name);
 extern const MethodInfo *(*il2cpp_class_get_method_from_name)(Il2CppClass *klass, const char *name, int argsCount);
