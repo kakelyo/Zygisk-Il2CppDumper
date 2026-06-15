@@ -4,36 +4,25 @@
 //
 // 用法: adb logcat -s HookTrace
 //
-// RVA 来源: hotupdate/csharp/dump.cs
-// 字段偏移来源: IDA Pro 逆向分析 + Frida JS 版验证
+// 原理: 通过 il2cpp API 获取 MethodInfo，替换 methodPointer 实现 hook
+//       不依赖任何 inline hook 框架（Dobby 等），更稳定
 //
 
 #include "hook_trace.h"
 #include "il2cpp_dump.h"
 #include "log.h"
 
-#include <dobby.h>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
-// ==================== RVA 配置 (来自 dump.cs) ====================
+// ==================== il2cpp API 函数指针 ====================
+// 这些在 il2cpp_dump.cpp 中通过 DO_API 宏定义，需要 extern 引用
 
-struct HookRVA {
-    uint64_t rva;
-    const char *name;
-};
-
-static const HookRVA RVA_TABLE[] = {
-    { 0x251E144, "net.CSRoleLoginRes.unpack" },           // H1
-    { 0x24770A0, "net.CSGuideFuncOpenedRes.unpack" },     // H2
-    { 0x1FB21A0, "S6Game.FuncOpenMgr.CheckOpenList" },    // H3
-    { 0x1FB2900, "S6Game.FuncOpenMgr.ReqFuncOpenData" },  // H4
-    { 0x1FB209C, "S6Game.FuncOpenMgr.HandleNotifyFuncOpened" }, // H5
-    { 0x1FB29A0, "S6Game.FuncOpenMgr.CheckFuncOpen" },    // H6
-    { 0x1E858B8, "S6Game.FuncOpenNetMgr.NotifySysOpenCfg" }, // H7
-};
+#define DO_API(r, n, p) extern r (*n) p
+#include "il2cpp-api-functions.h"
+#undef DO_API
 
 // ==================== 安全读取工具 ====================
 
@@ -118,19 +107,12 @@ static bool shouldLog(int idx) {
 // ==================== Hook 回调 ====================
 
 // --- H1: CSRoleLoginRes.unpack(self, srcBuf, cutVer, stack) ---
-// ARM64 calling convention: x0=self, x1=srcBuf, x2=cutVer, x3=stack
 typedef void (*H1_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack);
 static H1_Fn orig_H1 = nullptr;
 
 static void hook_H1(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
     orig_H1(self, srcBuf, cutVer, stack);
     if (!shouldLog(0)) return;
-    // CSRoleLoginRes 字段布局:
-    //   +0x10: CSRoleData RoleData (值类型, 内嵌)
-    //   +0x18: ProtoResult Result (int32 枚举)
-    //   +0x20: uint LastLogoutTime
-    //   +0x24: byte WearShape
-    //   +0x30: int32 RegionID
     auto result = safeReadS32((const uint8_t *)self + 0x18);
     auto lastLogout = safeReadU32((const uint8_t *)self + 0x20);
     auto wearShape = safeReadU8((const uint8_t *)self + 0x24);
@@ -146,15 +128,11 @@ static H2_Fn orig_H2 = nullptr;
 static void hook_H2(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
     orig_H2(self, srcBuf, cutVer, stack);
     if (!shouldLog(1)) return;
-    // CSGuideFuncOpenedRes 字段布局:
-    //   +0x10: int32 FuncOpenedCnt
-    //   +0x18: uint[] FuncOpenedList
     auto cnt = safeReadS32((const uint8_t *)self + 0x10);
     auto listPtr = safeReadPtr((const uint8_t *)self + 0x18);
     uint32_t buf[200];
     int32_t arrLen = 0;
     readUintArray(listPtr, &arrLen, buf, 200);
-    // 格式化输出
     char out[1024];
     int pos = 0;
     pos += snprintf(out + pos, sizeof(out) - pos, "FuncOpenedCnt=%d List=[", cnt);
@@ -163,7 +141,7 @@ static void hook_H2(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
         pos += snprintf(out + pos, sizeof(out) - pos, "%u,", buf[i]);
     }
     if (arrLen > 50) pos += snprintf(out + pos, sizeof(out) - pos, "...(%d more)", arrLen - 50);
-    if (printCount > 0) pos--; // remove trailing comma
+    if (printCount > 0) pos--;
     pos += snprintf(out + pos, sizeof(out) - pos, "]");
     LOGH("[H2] CSGuideFuncOpenedRes.unpack: %s", out);
 }
@@ -177,16 +155,12 @@ static void hook_H3(void *self, void *svrData) {
         orig_H3(self, svrData);
         return;
     }
-    // FuncOpenMgr 字段布局:
-    //   +0x10: bool m_initOpenList (byte)
-    //   +0x18: List<uint>* m_openFuncList
     auto initOpenList = safeReadU8((const uint8_t *)self + 0x10) != 0;
     auto openFuncListPtr = safeReadPtr((const uint8_t *)self + 0x18);
     int32_t listSize = 0;
     uint32_t listBuf[200];
     readUintList(openFuncListPtr, &listSize, listBuf, 200);
 
-    // svrData (CSGuideFuncOpenedRes): +0x10=cnt, +0x18=uint[]
     char svrInfo[512] = "<null>";
     if (svrData) {
         auto svrCnt = safeReadS32((const uint8_t *)svrData + 0x10);
@@ -194,26 +168,25 @@ static void hook_H3(void *self, void *svrData) {
         int32_t svrArrLen = 0;
         uint32_t svrBuf[200];
         readUintArray(svrListPtr, &svrArrLen, svrBuf, 200);
-        int pos = 0;
-        pos += snprintf(svrInfo, sizeof(svrInfo), "FuncOpenedCnt=%d List=[", svrCnt);
+        int sPos = 0;
+        sPos += snprintf(svrInfo, sizeof(svrInfo), "FuncOpenedCnt=%d List=[", svrCnt);
         int printCount = svrArrLen > 30 ? 30 : svrArrLen;
         for (int i = 0; i < printCount; i++) {
-            pos += snprintf(svrInfo + pos, sizeof(svrInfo) - pos, "%u,", svrBuf[i]);
+            sPos += snprintf(svrInfo + sPos, sizeof(svrInfo) - sPos, "%u,", svrBuf[i]);
         }
-        if (printCount > 0) pos--;
-        snprintf(svrInfo + pos, sizeof(svrInfo) - pos, "]");
+        if (printCount > 0) sPos--;
+        snprintf(svrInfo + sPos, sizeof(svrInfo) - sPos, "]");
     }
 
-    // 格式化 m_openFuncList
     char listOut[512];
-    int lpos = 0;
-    lpos += snprintf(listOut, sizeof(listOut), "size=%d [", listSize);
+    int lPos = 0;
+    lPos += snprintf(listOut, sizeof(listOut), "size=%d [", listSize);
     int printCount = listSize > 50 ? 50 : listSize;
     for (int i = 0; i < printCount; i++) {
-        lpos += snprintf(listOut + lpos, sizeof(listOut) - lpos, "%u,", listBuf[i]);
+        lPos += snprintf(listOut + lPos, sizeof(listOut) - lPos, "%u,", listBuf[i]);
     }
-    if (printCount > 0) lpos--;
-    snprintf(listOut + lpos, sizeof(listOut) - lpos, "]");
+    if (printCount > 0) lPos--;
+    snprintf(listOut + lPos, sizeof(listOut) - lPos, "]");
 
     LOGH("[H3] FuncOpenMgr.CheckOpenList: m_initOpenList=%d m_openFuncList=%s svrData=%s",
          initOpenList, listOut, svrInfo);
@@ -238,7 +211,6 @@ static H5_Fn orig_H5 = nullptr;
 static void hook_H5(void *self, int32_t result, void *msg) {
     orig_H5(self, result, msg);
     if (!shouldLog(4)) return;
-    // CSPkg.Head at msg+0x10, Cmd at head+0x12 (uint16 BE)
     uint16_t cmd = 0;
     auto head = safeReadPtr((const uint8_t *)msg + 0x10);
     if (head) {
@@ -249,7 +221,6 @@ static void hook_H5(void *self, int32_t result, void *msg) {
 }
 
 // --- H6: FuncOpenMgr.CheckFuncOpen(self, funcType, showTips) -> bool ---
-// ARM64: x0=self, x1=funcType(uint32), x2=showTips(bool), ret=w0(uint8/bool)
 typedef uint8_t (*H6_Fn)(void *self, uint32_t funcType, uint8_t showTips);
 static H6_Fn orig_H6 = nullptr;
 
@@ -281,14 +252,61 @@ static void hook_H7(void *self, int32_t result, void *msg) {
          result, cmd, cmd);
 }
 
-// ==================== Hook 注册 ====================
+// ==================== methodPointer 替换工具 ====================
 
 struct HookEntry {
-    uint64_t rva;
-    const char *name;
-    void *fake_fn;
-    void **orig_fn;
+    const char *ns;        // 命名空间
+    const char *cls;       // 类名
+    const char *method;    // 方法名
+    int argCount;          // 参数个数
+    void *fake_fn;         // hook 函数
+    void **orig_fn;        // 保存原始函数指针
 };
+
+static bool hookMethod(const HookEntry &entry) {
+    if (!il2cpp_domain_get || !il2cpp_domain_get_assemblies ||
+        !il2cpp_assembly_get_image || !il2cpp_class_from_name ||
+        !il2cpp_class_get_method_from_name) {
+        LOGH("ERROR: il2cpp API not initialized");
+        return false;
+    }
+
+    auto domain = il2cpp_domain_get();
+    if (!domain) {
+        LOGH("ERROR: il2cpp_domain_get() returned null");
+        return false;
+    }
+
+    size_t asmCount = 0;
+    auto assemblies = il2cpp_domain_get_assemblies(domain, &asmCount);
+    if (!assemblies) {
+        LOGH("ERROR: il2cpp_domain_get_assemblies() returned null");
+        return false;
+    }
+
+    for (size_t i = 0; i < asmCount; i++) {
+        auto image = il2cpp_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        auto klass = il2cpp_class_from_name(image, entry.ns, entry.cls);
+        if (!klass) continue;
+        auto method = il2cpp_class_get_method_from_name(klass, entry.method, entry.argCount);
+        if (!method) continue;
+
+        // 保存原始 methodPointer
+        *entry.orig_fn = (void *)method->methodPointer;
+        // 替换为 hook 函数
+        method->methodPointer = (Il2CppMethodPointer)entry.fake_fn;
+
+        LOGH("[OK] %s.%s.%s @ %p -> %p",
+             entry.ns, entry.cls, entry.method, *entry.orig_fn, entry.fake_fn);
+        return true;
+    }
+
+    LOGH("[FAIL] %s.%s.%s not found in any assembly", entry.ns, entry.cls, entry.method);
+    return false;
+}
+
+// ==================== Hook 注册 ====================
 
 void register_trace_hooks() {
     auto base = get_il2cpp_base();
@@ -300,24 +318,19 @@ void register_trace_hooks() {
     LOGH("il2cpp_base=0x%" PRIx64, base);
 
     HookEntry entries[] = {
-        { RVA_TABLE[0].rva, RVA_TABLE[0].name, (void *)hook_H1, (void **)&orig_H1 },
-        { RVA_TABLE[1].rva, RVA_TABLE[1].name, (void *)hook_H2, (void **)&orig_H2 },
-        { RVA_TABLE[2].rva, RVA_TABLE[2].name, (void *)hook_H3, (void **)&orig_H3 },
-        { RVA_TABLE[3].rva, RVA_TABLE[3].name, (void *)hook_H4, (void **)&orig_H4 },
-        { RVA_TABLE[4].rva, RVA_TABLE[4].name, (void *)hook_H5, (void **)&orig_H5 },
-        { RVA_TABLE[5].rva, RVA_TABLE[5].name, (void *)hook_H6, (void **)&orig_H6 },
-        { RVA_TABLE[6].rva, RVA_TABLE[6].name, (void *)hook_H7, (void **)&orig_H7 },
+        { "net",      "CSRoleLoginRes",       "unpack",               4, (void *)hook_H1, (void **)&orig_H1 },
+        { "net",      "CSGuideFuncOpenedRes", "unpack",               4, (void *)hook_H2, (void **)&orig_H2 },
+        { "S6Game",   "FuncOpenMgr",          "CheckOpenList",        1, (void *)hook_H3, (void **)&orig_H3 },
+        { "S6Game",   "FuncOpenMgr",          "ReqFuncOpenData",      0, (void *)hook_H4, (void **)&orig_H4 },
+        { "S6Game",   "FuncOpenMgr",          "HandleNotifyFuncOpened", 2, (void *)hook_H5, (void **)&orig_H5 },
+        { "S6Game",   "FuncOpenMgr",          "CheckFuncOpen",        2, (void *)hook_H6, (void **)&orig_H6 },
+        { "S6Game",   "FuncOpenNetMgr",       "NotifySysOpenCfg",     2, (void *)hook_H7, (void **)&orig_H7 },
     };
 
     int ok = 0;
     for (int i = 0; i < 7; i++) {
-        auto target = (void *)(base + entries[i].rva);
-        int ret = DobbyHook(target, entries[i].fake_fn, entries[i].orig_fn);
-        if (ret == 0) {
-            LOGH("[H%d] OK %s @ %p", i + 1, entries[i].name, target);
+        if (hookMethod(entries[i])) {
             ok++;
-        } else {
-            LOGH("[H%d] FAIL %s @ %p (DobbyHook ret=%d)", i + 1, entries[i].name, target, ret);
         }
     }
 

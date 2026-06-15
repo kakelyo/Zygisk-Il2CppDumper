@@ -12,5 +12,3 @@
 /out
 .externalNativeBuild
 .cxx
-# Dobby is cloned at build time by CI
-module/src/main/cpp/dobby/
