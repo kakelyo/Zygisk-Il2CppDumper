@@ -890,6 +890,9 @@ struct HookEntry {
     uint64_t rva;          // RVA 地址 (来自 dump.cs), 0 表示不用 RVA
     void *fake_fn;         // hook 函数
     void **orig_fn;        // 保存原始函数指针
+    int patchOffset;       // inline patch 偏移量 (相对于 methodPointer)
+                           // 用于多入口函数: +0 入口是包装, +8 是真正函数体
+                           // patchOffset=8 时, 在 +8 处 patch, 保留 +0~+7 原始指令
 };
 
 // 全局 il2cpp_base，在 register_trace_hooks 中设置
@@ -1133,15 +1136,21 @@ void register_trace_hooks() {
     // argCounts: 尝试不同的参数个数 (不含 self)
     // unpack(PbReadBuf, uint, PbStack) -> 3 个参数 (不含 self)
     // 但 il2cpp 有时把返回值也算参数，所以也尝试 4
+    //
+    // patchOffset: H6 (CheckFuncOpen) 有两个入口:
+    //   +0: MOV W2, #1; B +8  (设置默认参数 showTips=true)
+    //   +8: 函数主体           (CheckFuncOpen(uint, bool) 的 RVA 就在 +8)
+    // 如果在 +0 patch, .quad 数据会覆盖 +8 入口, 导致 BL +8 的调用者 SIGILL
+    // 修复: 在 +8 patch, 保留 +0~+7 的 MOV W2, #1 和 B +8 指令
     HookEntry entries[] = {
-        { "H1", "net",    "CSRoleLoginRes",       "unpack",               {3, 4, -1},       0x25691F4, (void *)hook_H1, (void **)&orig_H1 },
-        { "H2", "net",    "CSGuideFuncOpenedRes", "unpack",               {3, 4, -1},       0x24BFD84, (void *)hook_H2, (void **)&orig_H2 },
-        { "H3", "S6Game", "FuncOpenMgr",          "CheckOpenList",        {1, 0, -1},       0x1FE57CC, (void *)hook_H3, (void **)&orig_H3 },
-        { "H4", "S6Game", "FuncOpenMgr",          "ReqFuncOpenData",      {0, -1},          0x1FE5F2C, (void *)hook_H4, (void **)&orig_H4 },
-        { "H5", "S6Game", "FuncOpenMgr",          "HandleNotifyFuncOpened", {2, 1, -1},     0x1FE56C8, (void *)hook_H5, (void **)&orig_H5 },
-        { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FE5FC4, (void *)hook_H6, (void **)&orig_H6 },
-        { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1EB3374, (void *)hook_H7, (void **)&orig_H7 },
-        { "H8", "S6Game", "FuncOpenMgr",          "Init",                 {0, -1},          0x1FE5598, (void *)hook_H8, (void **)&orig_H8 },
+        { "H1", "net",    "CSRoleLoginRes",       "unpack",               {3, 4, -1},       0x25691F4, (void *)hook_H1, (void **)&orig_H1, 0 },
+        { "H2", "net",    "CSGuideFuncOpenedRes", "unpack",               {3, 4, -1},       0x24BFD84, (void *)hook_H2, (void **)&orig_H2, 0 },
+        { "H3", "S6Game", "FuncOpenMgr",          "CheckOpenList",        {1, 0, -1},       0x1FE57CC, (void *)hook_H3, (void **)&orig_H3, 0 },
+        { "H4", "S6Game", "FuncOpenMgr",          "ReqFuncOpenData",      {0, -1},          0x1FE5F2C, (void *)hook_H4, (void **)&orig_H4, 0 },
+        { "H5", "S6Game", "FuncOpenMgr",          "HandleNotifyFuncOpened", {2, 1, -1},     0x1FE56C8, (void *)hook_H5, (void **)&orig_H5, 0 },
+        { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FE5FC4, (void *)hook_H6, (void **)&orig_H6, 8 },
+        { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1EB3374, (void *)hook_H7, (void **)&orig_H7, 0 },
+        { "H8", "S6Game", "FuncOpenMgr",          "Init",                 {0, -1},          0x1FE5598, (void *)hook_H8, (void **)&orig_H8, 0 },
     };
 
     int ok = 0;
@@ -1166,10 +1175,20 @@ void register_trace_hooks() {
             LOGH("[INLINE-%s] SKIP: orig_fn is null (method not found)", entries[i].tag);
             continue;
         }
-        if (installInlineHook(targetFn, entries[i].fake_fn, entries[i].orig_fn, i)) {
-            LOGH("[INLINE-%s] OK at %p bridge=%p", entries[i].tag, targetFn, *entries[i].orig_fn);
+
+        // 计算实际 patch 地址
+        // 对于多入口函数 (如 H6), methodPointer 指向 +0 (包装入口)
+        // 但 +8 才是函数主体, 需要在 +8 处 patch 以避免覆盖 +8 入口
+        void *patchAddr = (void *)((uint8_t *)targetFn + entries[i].patchOffset);
+        if (entries[i].patchOffset > 0) {
+            LOGH("[INLINE-%s] Multi-entry function: methodPointer=%p, patching at +0x%X => %p",
+                 entries[i].tag, targetFn, entries[i].patchOffset, patchAddr);
+        }
+
+        if (installInlineHook(patchAddr, entries[i].fake_fn, entries[i].orig_fn, i)) {
+            LOGH("[INLINE-%s] OK at %p bridge=%p", entries[i].tag, patchAddr, *entries[i].orig_fn);
         } else {
-            LOGH("[INLINE-%s] FAILED at %p (bridge creation failed, hook may not trigger for direct calls)", entries[i].tag, targetFn);
+            LOGH("[INLINE-%s] FAILED at %p (bridge creation failed, hook may not trigger for direct calls)", entries[i].tag, patchAddr);
         }
     }
 
