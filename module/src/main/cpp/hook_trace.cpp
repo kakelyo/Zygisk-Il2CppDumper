@@ -558,12 +558,14 @@ static uint32_t invertCondBranch(uint32_t insn) {
 // 两遍扫描: 第一遍计算每条指令展开后的大小，第二遍生成代码
 struct BridgeInsn {
     uint32_t orig;        // 原始指令
-    int expandedSize;     // 展开后的大小 (4 或 12 或 16 或 24)
+    int expandedSize;     // 展开后的大小 (4 或 12 或 16 或 20 或 24)
     uint8_t code[24];     // 展开后的代码
     bool isBL;            // 是否是 BL (需要特殊处理 LR)
     uint64_t blTarget;    // BL 的目标地址
     uint64_t blReturnIdx; // BL 返回后应执行的指令索引
-    int internalBranch;   // B/BL 目标在 patched 区域内的指令索引 (-1=不是)
+    int internalBranch;   // B/BL/CondBranch 目标在 patched 区域内的指令索引 (-1=不是)
+    bool isCondBranchIndirect; // 条件分支超范围，需要反转+间接跳转
+    uint64_t condBranchTarget; // 条件分支的目标地址
 };
 
 static void *createBridge(void *targetFn, const uint8_t *saved) {
@@ -580,6 +582,8 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
         insns[i].orig = insn;
         insns[i].isBL = false;
         insns[i].internalBranch = -1;
+        insns[i].isCondBranchIndirect = false;
+        insns[i].condBranchTarget = 0;
         uintptr_t insnOrigPC = origPC + i * 4;
 
         if ((insn & 0x9F000000) == 0x90000000) {
@@ -688,21 +692,16 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
                         insns[i].expandedSize = 4;
                     } else {
                         // 超出修复范围，用反转条件 + 间接跳转替代
-                        // CBZ target -> CBNZ +8; LDR X16, [PC, #8]; BR X16; .quad target
-                        // CBNZ target -> CBZ +8; LDR X16, [PC, #8]; BR X16; .quad target
+                        // CBZ target -> CBNZ skip; LDR X16, [PC, #8]; BR X16; .quad target
+                        // CBNZ target -> CBZ skip; LDR X16, [PC, #8]; BR X16; .quad target
                         // B.cond target -> 无法反转，暂不支持
                         uint32_t inverted = invertCondBranch(insn);
                         if (inverted != 0) {
-                            // 反转条件，跳过间接跳转 (offset=2, 即 +8 bytes)
-                            uint32_t invertedBranch = (inverted & 0xFF00001F) | (2 << 5);
-                            const uint32_t ldrX16 = 0x58000050;
-                            const uint32_t brX16 = 0xD61F0200;
-                            memcpy(insns[i].code, &invertedBranch, 4);
-                            memcpy(insns[i].code + 4, &ldrX16, 4);
-                            memcpy(insns[i].code + 8, &brX16, 4);
-                            memcpy(insns[i].code + 12, &condTarget, 8);
-                            insns[i].expandedSize = 20;
-                            LOGH("[BRIDGE] CondBranch at insn %d out of range, replaced with inverted + indirect branch", i);
+                            // 标记为条件分支间接跳转，第二遍生成代码
+                            insns[i].isCondBranchIndirect = true;
+                            insns[i].condBranchTarget = condTarget;
+                            insns[i].expandedSize = 20; // CBNZ + LDR + BR + .quad
+                            LOGH("[BRIDGE] CondBranch at insn %d out of range, will use inverted + indirect branch", i);
                         } else {
                             // B.cond 超出范围，无法处理，直接复制（会导致错误跳转）
                             memcpy(insns[i].code, &insn, 4);
@@ -790,12 +789,25 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
                     }
                     memcpy(bridge + pos, &fixed, 4);
                 }
+            } else if (insns[i].isCondBranchIndirect) {
+                // 条件分支超范围: 反转条件 + 间接跳转
+                // CBZ target -> CBNZ skip; LDR X16, [PC, #8]; BR X16; .quad target
+                // CBNZ target -> CBZ skip; LDR X16, [PC, #8]; BR X16; .quad target
+                uint32_t inverted = invertCondBranch(insn);
+                // 反转条件分支跳过间接跳转，跳到下一条 bridge 指令 (offsets[i+1])
+                int64_t skipOffset = (offsets[i + 1] - pos) / 4;
+                uint32_t invertedBranch = (inverted & 0xFF00001F) | (((uint32_t)skipOffset & 0x7FFFF) << 5);
+                const uint32_t ldrX16 = 0x58000050; // LDR X16, [PC, #8]
+                const uint32_t brX16 = 0xD61F0200;  // BR X16
+                memcpy(bridge + pos, &invertedBranch, 4);
+                memcpy(bridge + pos + 4, &ldrX16, 4);
+                memcpy(bridge + pos + 8, &brX16, 4);
+                memcpy(bridge + pos + 12, &insns[i].condBranchTarget, 8);
+                LOGH("[BRIDGE] CondBranch indirect at insn %d, skip offset=%lld, target=%p",
+                     i, (long long)skipOffset, (void *)insns[i].condBranchTarget);
             } else {
                 // 展开后的指令，PC-relative 已经通过间接方式处理
-                // 但 ADRP 展开中的 LDR Xd, [PC, #4] 需要确认偏移正确
                 // ADRP 展开: LDR Xd, [PC, #4]; .quad target
-                // LDR Xd, [PC, #4] 中 PC = bridge+pos, 加载 bridge+pos+4
-                // .quad target 在 bridge+pos+4，正确
                 memcpy(bridge + pos, insns[i].code, insns[i].expandedSize);
             }
             pos += insns[i].expandedSize;
