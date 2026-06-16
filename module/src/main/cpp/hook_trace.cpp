@@ -558,7 +558,7 @@ static uint32_t invertCondBranch(uint32_t insn) {
 // 两遍扫描: 第一遍计算每条指令展开后的大小，第二遍生成代码
 struct BridgeInsn {
     uint32_t orig;        // 原始指令
-    int expandedSize;     // 展开后的大小 (4 或 12 或 16 或 20 或 24)
+    int expandedSize;     // 展开后的大小 (4 或 16 或 20 或 24)
     uint8_t code[24];     // 展开后的代码
     bool isBL;            // 是否是 BL (需要特殊处理 LR)
     uint64_t blTarget;    // BL 的目标地址
@@ -594,18 +594,21 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
                 memcpy(insns[i].code, &fixed, 4);
                 insns[i].expandedSize = 4;
             } else {
-                // 超出范围，用 LDR Xd, [PC, #4]; .quad target (12 bytes)
+                // 超出范围，用 LDR Xd, [PC, #8]; B +2; .quad target (16 bytes)
+                // LDR 加载 .quad 数据到 Xd，B 跳过 .quad 继续执行
                 int64_t immhi = (insn >> 5) & 0x7FFFF;
                 int64_t immlo = (insn >> 29) & 0x3;
                 int64_t imm = (immhi << 2) | immlo;
                 if (imm & 0x100000) imm -= 0x200000;
                 uint64_t target = (insnOrigPC & ~(uint64_t)0xFFF) + (imm << 12);
                 uint32_t rd = insn & 0x1F;
-                uint32_t ldrXd = 0x58000020 | rd; // LDR Xd, label (imm19=1, PC+4)
+                uint32_t ldrXd = 0x58000040 | rd; // LDR Xd, label (imm19=2, PC+8)
+                uint32_t bSkip = 0x14000002;       // B +2 (skip .quad, 8 bytes)
                 memcpy(insns[i].code, &ldrXd, 4);
-                memcpy(insns[i].code + 4, &target, 8);
-                insns[i].expandedSize = 12;
-                LOGH("[BRIDGE] ADRP out of range at insn %d, replaced with LDR X%d + .quad", i, rd);
+                memcpy(insns[i].code + 4, &bSkip, 4);
+                memcpy(insns[i].code + 8, &target, 8);
+                insns[i].expandedSize = 16;
+                LOGH("[BRIDGE] ADRP out of range at insn %d, replaced with LDR X%d + B + .quad", i, rd);
             }
         } else if ((insn & 0xFC000000) == 0x14000000) {
             // B (unconditional branch)
@@ -659,18 +662,21 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
                 memcpy(insns[i].code, &fixed, 4);
                 insns[i].expandedSize = 4;
             } else {
-                // 超出范围，用间接加载: LDR X16, [PC, #8]; LDR Xt, [X16]; .quad target (16 bytes)
+                // 超出范围，用间接加载: LDR X16, [PC, #12]; LDR Xt, [X16]; B +2; .quad target (20 bytes)
+                // LDR X16 从 PC+12 加载 .quad 地址，B +2 跳过 .quad 数据
                 uint32_t rt = insn & 0x1F;
                 int64_t offset = insn & 0x7FFFF;
                 if (offset & 0x40000) offset -= 0x80000;
                 uint64_t target = insnOrigPC + (offset << 2);
-                const uint32_t ldrX16 = 0x58000050;
-                uint32_t ldrXtX16 = 0xF9400200 | rt;
+                const uint32_t ldrX16 = 0x58000060; // LDR X16, [PC, #12] (imm19=3)
+                uint32_t ldrXtX16 = 0xF9400200 | rt; // LDR Xt, [X16]
+                uint32_t bSkip = 0x14000002;           // B +2 (skip .quad)
                 memcpy(insns[i].code, &ldrX16, 4);
                 memcpy(insns[i].code + 4, &ldrXtX16, 4);
-                memcpy(insns[i].code + 8, &target, 8);
-                insns[i].expandedSize = 16;
-                LOGH("[BRIDGE] LDR literal out of range at insn %d, replaced with indirect load", i);
+                memcpy(insns[i].code + 8, &bSkip, 4);
+                memcpy(insns[i].code + 12, &target, 8);
+                insns[i].expandedSize = 20;
+                LOGH("[BRIDGE] LDR literal out of range at insn %d, replaced with indirect load + B skip", i);
             }
         } else {
             // 检查是否是条件分支 (CBZ/CBNZ/B.cond)
@@ -807,7 +813,7 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
                      i, (long long)skipOffset, (void *)insns[i].condBranchTarget);
             } else {
                 // 展开后的指令，PC-relative 已经通过间接方式处理
-                // ADRP 展开: LDR Xd, [PC, #4]; .quad target
+                // ADRP 展开: LDR Xd, [PC, #8]; B +2; .quad target
                 memcpy(bridge + pos, insns[i].code, insns[i].expandedSize);
             }
             pos += insns[i].expandedSize;
