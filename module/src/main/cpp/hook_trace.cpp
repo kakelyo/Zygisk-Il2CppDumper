@@ -364,15 +364,15 @@ static int32_t hook_H9(void *self, void *data) {
     // BE wire: 0x3243=Magic, Cmd 可能是 0x0BC6(BE读) 或 0xC60B(LE读)
     bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B || cmd == 0xDA07 ||
                   cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5 || cmd == 0x07DA);
-    if (match) {
-        // 同时打印原始 hex 以便调试偏移
-        char hex[49] = {};
-        for (int i = 0; i < 24 && i < avail; i++)
-            snprintf(hex + i*2, 3, "%02X", headBuf[i]);
+    
+    // 同时打印原始 hex 以便调试偏移
+    char hex[49] = {};
+    for (int i = 0; i < 24 && i < avail; i++)
+        snprintf(hex + i*2, 3, "%02X", headBuf[i]);
 
-        LOGH("[H9] GameClient.OnRecvData: ret=%d Cmd=0x%04X Magic=0x%04X PkgLen=%u Ver=%u Echo=%u pos=%d len=%d avail=%d hex=%s",
-             ret, cmd, magic, pkgLen, ver, echo, savedPos, len, avail, hex);
-    }
+    LOGH("[H9] GameClient.OnRecvData: ret=%d Cmd=0x%04X Magic=0x%04X PkgLen=%u Ver=%u Echo=%u pos=%d len=%d avail=%d hex=%s",
+            ret, cmd, magic, pkgLen, ver, echo, savedPos, len, avail, hex);
+
 
     return ret;
 }
@@ -405,10 +405,10 @@ static int32_t hook_H10(void *self, void *srcBuf, uint32_t cutVer, void *stack) 
     // 两种都检查以确保匹配
     bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B ||
                   cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5);
-    if (match) {
-        LOGH("[H10] CSPkgHead.unpack: ret=%d Magic=0x%04X Cmd=0x%04X PkgLen=%u Ver=%u Echo=%u SvrTime=%u",
-             ret, magic, cmd, pkgLen, ver, echo, svrTime);
-    }
+    
+    LOGH("[H10] CSPkgHead.unpack: ret=%d Magic=0x%04X Cmd=0x%04X PkgLen=%u Ver=%u Echo=%u SvrTime=%u",
+            ret, magic, cmd, pkgLen, ver, echo, svrTime);
+
 
     return ret;
 }
@@ -434,9 +434,9 @@ static void hook_H11(void *self, void *msg) {
     // 客户端内部 CmdID 是 NetworkToHostOrder 后的值（大端解释）
     bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B ||
                   cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5);
-    if (match) {
-        LOGH("[H11] MsgDispatcher.NotifyMsg: Cmd=0x%04X Echo=%u", cmd, echo);
-    }
+
+    LOGH("[H11] MsgDispatcher.NotifyMsg: Cmd=0x%04X Echo=%u", cmd, echo);
+    
 }
 
 // ==================== VTable Patch ====================
