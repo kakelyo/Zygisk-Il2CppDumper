@@ -100,6 +100,14 @@ static void readUintArray(const void *arrPtr, int32_t *outLen, uint32_t *outBuf,
     }
 }
 
+// 大端序读取工具（网络字节序 → 主机序）
+static inline uint16_t readBE16(const uint8_t *p) {
+    return (uint16_t)p[0] << 8 | p[1];
+}
+static inline uint32_t readBE32(const uint8_t *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
 // ==================== 限流计数器 ====================
 
 struct CallCounter {
@@ -347,32 +355,27 @@ static int32_t hook_H9(void *self, void *data) {
     }
 
     // 解析 CSPkgHead 字段（从当前 position 开始，偏移 0）
+    // 线路格式是大端序（网络字节序），必须用 readBE16/readBE32 读取
     uint16_t magic = 0, cmd = 0;
     uint32_t pkgLen = 0;
     uint16_t ver = 0;
     uint32_t echo = 0;
-    if (avail >= 2) memcpy(&magic, headBuf, 2);
-    if (avail >= 4) memcpy(&cmd, headBuf + 2, 2);
-    if (avail >= 8) memcpy(&pkgLen, headBuf + 4, 4);
-    if (avail >= 10) memcpy(&ver, headBuf + 8, 2);
-    if (avail >= 14) memcpy(&echo, headBuf + 10, 4);
+    if (avail >= 2) magic = readBE16(headBuf);
+    if (avail >= 4) cmd = readBE16(headBuf + 2);
+    if (avail >= 8) pkgLen = readBE32(headBuf + 4);
+    if (avail >= 10) ver = readBE16(headBuf + 8);
+    if (avail >= 14) echo = readBE32(headBuf + 10);
 
     // 调用原始函数
     auto ret = orig_H9(self, data);
 
-    // 打印关键 CmdID 的日志（考虑大小端两种情况）
-    // BE wire: 0x3243=Magic, Cmd 可能是 0x0BC6(BE读) 或 0xC60B(LE读)
-    bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B || cmd == 0xDA07 ||
-                  cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5 || cmd == 0x07DA);
-    
-    // 同时打印原始 hex 以便调试偏移
+    // 打印原始 hex 以便调试偏移
     char hex[49] = {};
     for (int i = 0; i < 24 && i < avail; i++)
         snprintf(hex + i*2, 3, "%02X", headBuf[i]);
 
     LOGH("[H9] GameClient.OnRecvData: ret=%d Cmd=0x%04X Magic=0x%04X PkgLen=%u Ver=%u Echo=%u pos=%d len=%d avail=%d hex=%s",
             ret, cmd, magic, pkgLen, ver, echo, savedPos, len, avail, hex);
-
 
     return ret;
 }
@@ -400,15 +403,8 @@ static int32_t hook_H10(void *self, void *srcBuf, uint32_t cutVer, void *stack) 
     auto echo = safeReadU32((const uint8_t *)self + 0x1C);
     auto svrTime = safeReadU32((const uint8_t *)self + 0x20);
 
-    // 客户端内部 CmdID 是 NetworkToHostOrder 后的值（大端解释）
-    // zone-svr 用 0xC60B/0xD607/0xC50B，客户端内部是 0x0BC6/0x07D6/0x0BC5
-    // 两种都检查以确保匹配
-    bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B ||
-                  cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5);
-    
     LOGH("[H10] CSPkgHead.unpack: ret=%d Magic=0x%04X Cmd=0x%04X PkgLen=%u Ver=%u Echo=%u SvrTime=%u",
             ret, magic, cmd, pkgLen, ver, echo, svrTime);
-
 
     return ret;
 }
@@ -431,12 +427,7 @@ static void hook_H11(void *self, void *msg) {
 
     orig_H11(self, msg);
 
-    // 客户端内部 CmdID 是 NetworkToHostOrder 后的值（大端解释）
-    bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B ||
-                  cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5);
-
     LOGH("[H11] MsgDispatcher.NotifyMsg: Cmd=0x%04X Echo=%u", cmd, echo);
-    
 }
 
 // ==================== VTable Patch ====================
