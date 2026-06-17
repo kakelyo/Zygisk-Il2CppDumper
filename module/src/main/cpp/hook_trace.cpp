@@ -329,47 +329,49 @@ typedef int32_t (*H9_Fn)(void *self, void *data);
 static H9_Fn orig_H9 = nullptr;
 
 static int32_t hook_H9(void *self, void *data) {
-    auto ret = orig_H9(self, data);
-
-    // 读取 PbReadBuf 的 position 和 length
+    // 在调用 orig_H9 之前保存 position，因为 orig_H9 会推进 position
     // PbReadBuf layout: +0x10=byte[] buf, +0x18=int position, +0x1C=int length
-    auto bufPtr = safeReadPtr((const uint8_t *)data + 0x10);
-    auto pos = safeReadS32((const uint8_t *)data + 0x18);
+    auto arrPtr = safeReadPtr((const uint8_t *)data + 0x10);
+    auto savedPos = safeReadS32((const uint8_t *)data + 0x18);
     auto len = safeReadS32((const uint8_t *)data + 0x1C);
 
-    // 读取前 24 字节来解析包头
-    // 客户端格式: CSSecBody(Crc:4 + Seq:2) + CSMiniPkgHead(Magic:2 + Cmd:2 + PkgLen:4 + Ver:2)
-    // 总共 16 字节的安全头+mini头
+    // IL2CPP byte[] 实际数据从 +0x20 开始 (klass:8 + monitor:8 + bounds:8 + max_length:4+pad:4)
+    auto bufPtr = arrPtr ? (const uint8_t *)arrPtr + 0x20 : nullptr;
+    int32_t avail = len - savedPos;
+
+    // 从当前 position 读取包头（CSSecBody 已在更底层解析，position 已跳过 6 字节）
+    // CSPkgHead: Magic(2) + Cmd(2) + PkgLen(4) + Ver(2) + Echo(4) + SvrTime(4) = 18 bytes
     uint8_t headBuf[24] = {};
-    if (bufPtr && len >= 16) {
-        memcpy(headBuf, bufPtr, len >= 24 ? 24 : len);
+    if (bufPtr && avail >= 10) {
+        memcpy(headBuf, bufPtr + savedPos, avail >= 24 ? 24 : avail);
     }
 
-    // 解析关键字段
+    // 解析 CSPkgHead 字段（从当前 position 开始，偏移 0）
     uint16_t magic = 0, cmd = 0;
-    if (len >= 10) {
-        // CSSecBody: Crc(4B at offset 0) + Seq(2B at offset 4)
-        // CSMiniPkgHead: Magic(2B at offset 6) + Cmd(2B at offset 8)
-        memcpy(&magic, headBuf + 6, 2);  // BE uint16
-        memcpy(&cmd, headBuf + 8, 2);     // BE uint16
-    }
+    uint32_t pkgLen = 0;
+    uint16_t ver = 0;
+    uint32_t echo = 0;
+    if (avail >= 2) memcpy(&magic, headBuf, 2);
+    if (avail >= 4) memcpy(&cmd, headBuf + 2, 2);
+    if (avail >= 8) memcpy(&pkgLen, headBuf + 4, 4);
+    if (avail >= 10) memcpy(&ver, headBuf + 8, 2);
+    if (avail >= 14) memcpy(&echo, headBuf + 10, 4);
 
-    // 只打印关键 CmdID 的日志 (0xC60B=CSGuideFuncOpenedRes, 0xD607=RoleLoginRes, 0xC50B=GuideFuncOpenedReq)
-    // 以及所有收到的包的简要信息
-    if (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B || cmd == 0xDA07) {
-        uint32_t crc = 0;
-        uint16_t seq = 0;
-        uint32_t pkgLen = 0;
-        uint16_t ver = 0;
-        uint32_t echo = 0;
-        if (len >= 6) memcpy(&crc, headBuf, 4);
-        if (len >= 6) memcpy(&seq, headBuf + 4, 2);
-        if (len >= 12) memcpy(&pkgLen, headBuf + 10, 4);
-        if (len >= 14) memcpy(&ver, headBuf + 14, 2);
-        if (len >= 20) memcpy(&echo, headBuf + 16, 4);
+    // 调用原始函数
+    auto ret = orig_H9(self, data);
 
-        LOGH("[H9] GameClient.OnRecvData: ret=%d Cmd=0x%04X Magic=0x%04X Seq=%u PkgLen=%u Ver=%u Echo=%u dataLen=%d",
-             ret, cmd, magic, seq, pkgLen, ver, echo, len);
+    // 打印关键 CmdID 的日志（考虑大小端两种情况）
+    // BE wire: 0x3243=Magic, Cmd 可能是 0x0BC6(BE读) 或 0xC60B(LE读)
+    bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B || cmd == 0xDA07 ||
+                  cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5 || cmd == 0x07DA);
+    if (match) {
+        // 同时打印原始 hex 以便调试偏移
+        char hex[49] = {};
+        for (int i = 0; i < 24 && i < avail; i++)
+            snprintf(hex + i*2, 3, "%02X", headBuf[i]);
+
+        LOGH("[H9] GameClient.OnRecvData: ret=%d Cmd=0x%04X Magic=0x%04X PkgLen=%u Ver=%u Echo=%u pos=%d len=%d avail=%d hex=%s",
+             ret, cmd, magic, pkgLen, ver, echo, savedPos, len, avail, hex);
     }
 
     return ret;
@@ -398,8 +400,12 @@ static int32_t hook_H10(void *self, void *srcBuf, uint32_t cutVer, void *stack) 
     auto echo = safeReadU32((const uint8_t *)self + 0x1C);
     auto svrTime = safeReadU32((const uint8_t *)self + 0x20);
 
-    // 只打印关键 CmdID
-    if (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B) {
+    // 客户端内部 CmdID 是 NetworkToHostOrder 后的值（大端解释）
+    // zone-svr 用 0xC60B/0xD607/0xC50B，客户端内部是 0x0BC6/0x07D6/0x0BC5
+    // 两种都检查以确保匹配
+    bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B ||
+                  cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5);
+    if (match) {
         LOGH("[H10] CSPkgHead.unpack: ret=%d Magic=0x%04X Cmd=0x%04X PkgLen=%u Ver=%u Echo=%u SvrTime=%u",
              ret, magic, cmd, pkgLen, ver, echo, svrTime);
     }
@@ -425,8 +431,10 @@ static void hook_H11(void *self, void *msg) {
 
     orig_H11(self, msg);
 
-    // 只打印关键 CmdID
-    if (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B) {
+    // 客户端内部 CmdID 是 NetworkToHostOrder 后的值（大端解释）
+    bool match = (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B ||
+                  cmd == 0x0BC6 || cmd == 0x07D6 || cmd == 0x0BC5);
+    if (match) {
         LOGH("[H11] MsgDispatcher.NotifyMsg: Cmd=0x%04X Echo=%u", cmd, echo);
     }
 }
