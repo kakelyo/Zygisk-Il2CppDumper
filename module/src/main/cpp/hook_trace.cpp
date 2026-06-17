@@ -107,9 +107,10 @@ struct CallCounter {
     int limit;
 };
 
-static CallCounter g_counters[8] = {
+static CallCounter g_counters[11] = {
     {0, 10}, {0, 10}, {0, 10}, {0, 10},
-    {0, 50}, {0, 10}, {0, 10}, {0, 10}
+    {0, 50}, {0, 10}, {0, 10}, {0, 10},
+    {0, 50}, {0, 50}, {0, 50}
 };
 
 static bool shouldLog(int idx) {
@@ -318,6 +319,118 @@ static void hook_H8(void *self) {
     LOGH("[H8] FuncOpenMgr.Init: m_initOpenList=%d m_openFuncList=%s", initOpenList, listOut);
 }
 
+// ==================== 网络层 Hook (H9-H11) ====================
+// 追踪 CSGuideFuncOpenedRes (0xC60B) 的接收和分发流程
+
+// --- H9: GameClient.OnRecvData(self, PbReadBuf data) -> bool ---
+// RVA: 0x201BF64
+// 在这里可以看到客户端网络层收到了什么数据
+typedef int32_t (*H9_Fn)(void *self, void *data);
+static H9_Fn orig_H9 = nullptr;
+
+static int32_t hook_H9(void *self, void *data) {
+    auto ret = orig_H9(self, data);
+
+    // 读取 PbReadBuf 的 position 和 length
+    // PbReadBuf layout: +0x10=byte[] buf, +0x18=int position, +0x1C=int length
+    auto bufPtr = safeReadPtr((const uint8_t *)data + 0x10);
+    auto pos = safeReadS32((const uint8_t *)data + 0x18);
+    auto len = safeReadS32((const uint8_t *)data + 0x1C);
+
+    // 读取前 24 字节来解析包头
+    // 客户端格式: CSSecBody(Crc:4 + Seq:2) + CSMiniPkgHead(Magic:2 + Cmd:2 + PkgLen:4 + Ver:2)
+    // 总共 16 字节的安全头+mini头
+    uint8_t headBuf[24] = {};
+    if (bufPtr && len >= 16) {
+        memcpy(headBuf, bufPtr, len >= 24 ? 24 : len);
+    }
+
+    // 解析关键字段
+    uint16_t magic = 0, cmd = 0;
+    if (len >= 10) {
+        // CSSecBody: Crc(4B at offset 0) + Seq(2B at offset 4)
+        // CSMiniPkgHead: Magic(2B at offset 6) + Cmd(2B at offset 8)
+        memcpy(&magic, headBuf + 6, 2);  // BE uint16
+        memcpy(&cmd, headBuf + 8, 2);     // BE uint16
+    }
+
+    // 只打印关键 CmdID 的日志 (0xC60B=CSGuideFuncOpenedRes, 0xD607=RoleLoginRes, 0xC50B=GuideFuncOpenedReq)
+    // 以及所有收到的包的简要信息
+    if (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B || cmd == 0xDA07) {
+        uint32_t crc = 0;
+        uint16_t seq = 0;
+        uint32_t pkgLen = 0;
+        uint16_t ver = 0;
+        uint32_t echo = 0;
+        if (len >= 6) memcpy(&crc, headBuf, 4);
+        if (len >= 6) memcpy(&seq, headBuf + 4, 2);
+        if (len >= 12) memcpy(&pkgLen, headBuf + 10, 4);
+        if (len >= 14) memcpy(&ver, headBuf + 14, 2);
+        if (len >= 20) memcpy(&echo, headBuf + 16, 4);
+
+        LOGH("[H9] GameClient.OnRecvData: ret=%d Cmd=0x%04X Magic=0x%04X Seq=%u PkgLen=%u Ver=%u Echo=%u dataLen=%d",
+             ret, cmd, magic, seq, pkgLen, ver, echo, len);
+    }
+
+    return ret;
+}
+
+// --- H10: CSPkgHead.unpack(self, srcBuf, cutVer, stack) -> PbError.ErrorType ---
+// RVA: 0x267E318
+// 解析包头后可以读取 Magic, Cmd, PkgLen, Ver, Echo, SvrTime
+typedef int32_t (*H10_Fn)(void *self, void *srcBuf, uint32_t cutVer, void *stack);
+static H10_Fn orig_H10 = nullptr;
+
+static int32_t hook_H10(void *self, void *srcBuf, uint32_t cutVer, void *stack) {
+    auto ret = orig_H10(self, srcBuf, cutVer, stack);
+
+    // CSPkgHead layout (dump.cs):
+    //   +0x10  ushort Magic
+    //   +0x12  ushort Cmd
+    //   +0x14  uint   PkgLen
+    //   +0x18  ushort Ver
+    //   +0x1C  uint   Echo
+    //   +0x20  uint   SvrTime
+    auto magic = safeReadU32((const uint8_t *)self + 0x10) & 0xFFFF;
+    auto cmd = safeReadU32((const uint8_t *)self + 0x12) & 0xFFFF;
+    auto pkgLen = safeReadU32((const uint8_t *)self + 0x14);
+    auto ver = safeReadU32((const uint8_t *)self + 0x18) & 0xFFFF;
+    auto echo = safeReadU32((const uint8_t *)self + 0x1C);
+    auto svrTime = safeReadU32((const uint8_t *)self + 0x20);
+
+    // 只打印关键 CmdID
+    if (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B) {
+        LOGH("[H10] CSPkgHead.unpack: ret=%d Magic=0x%04X Cmd=0x%04X PkgLen=%u Ver=%u Echo=%u SvrTime=%u",
+             ret, magic, cmd, pkgLen, ver, echo, svrTime);
+    }
+
+    return ret;
+}
+
+// --- H11: MsgDispatcher.NotifyMsg(self, CSPkg msg) ---
+// RVA: 0x201C650
+// 消息分发入口，可以看到 Echo 匹配和 CmdHandle 调用
+typedef void (*H11_Fn)(void *self, void *msg);
+static H11_Fn orig_H11 = nullptr;
+
+static void hook_H11(void *self, void *msg) {
+    // CSPkg: +0x10=CSPkgHead Head, +0x18=CSPkgBody Body
+    auto head = safeReadPtr((const uint8_t *)msg + 0x10);
+    uint16_t cmd = 0;
+    uint32_t echo = 0;
+    if (head) {
+        cmd = safeReadU32((const uint8_t *)head + 0x12) & 0xFFFF;
+        echo = safeReadU32((const uint8_t *)head + 0x1C);
+    }
+
+    orig_H11(self, msg);
+
+    // 只打印关键 CmdID
+    if (cmd == 0xC60B || cmd == 0xD607 || cmd == 0xC50B) {
+        LOGH("[H11] MsgDispatcher.NotifyMsg: Cmd=0x%04X Echo=%u", cmd, echo);
+    }
+}
+
 // ==================== VTable Patch ====================
 //
 // il2cpp 虚方法通过 vtable 分派:
@@ -389,7 +502,7 @@ struct InlineHookInfo {
     bool installed;      // 是否已安装
 };
 
-static InlineHookInfo g_inlineHooks[8] = {};
+static InlineHookInfo g_inlineHooks[11] = {};
 
 // ==================== ARM64 Bridge (跳板) ====================
 //
@@ -839,7 +952,7 @@ static void *createBridge(void *targetFn, const uint8_t *saved) {
 }
 
 static bool installInlineHook(void *targetFn, void *hookFn, void **origFn, int idx) {
-    if (!targetFn || !hookFn || !origFn || idx < 0 || idx >= 8) return false;
+    if (!targetFn || !hookFn || !origFn || idx < 0 || idx >= 11) return false;
 
     // 1. 保存原始 16 bytes
     memcpy(g_inlineHooks[idx].saved, targetFn, 16);
@@ -1151,16 +1264,20 @@ void register_trace_hooks() {
         { "H6", "S6Game", "FuncOpenMgr",          "CheckFuncOpen",        {2, -1},          0x1FE5FC4, (void *)hook_H6, (void **)&orig_H6, 8 },
         { "H7", "S6Game", "FuncOpenNetMgr",       "NotifySysOpenCfg",     {2, -1},          0x1EB3374, (void *)hook_H7, (void **)&orig_H7, 0 },
         { "H8", "S6Game", "FuncOpenMgr",          "Init",                 {0, -1},          0x1FE5598, (void *)hook_H8, (void **)&orig_H8, 0 },
+        // 网络层 hook - 追踪 CSGuideFuncOpenedRes 的接收和分发
+        { "H9", "S6Game", "GameClient",           "OnRecvData",           {1, -1},          0x201BF64, (void *)hook_H9, (void **)&orig_H9, 0 },
+        { "H10","net",    "CSPkgHead",            "unpack",               {3, 4, -1},       0x267E318, (void *)hook_H10, (void **)&orig_H10, 0 },
+        { "H11","S6Game", "MsgDispatcher",        "NotifyMsg",            {1, -1},          0x201C650, (void *)hook_H11, (void **)&orig_H11, 0 },
     };
 
     int ok = 0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 11; i++) {
         if (hookMethodMulti(entries[i])) {
             ok++;
         }
     }
 
-    LOGH("Registered %d/8 hooks via methodPointer+vtable (g_forceFuncOpen=%d). Now installing inline hooks with bridge...", ok, g_forceFuncOpen ? 1 : 0);
+    LOGH("Registered %d/11 hooks via methodPointer+vtable (g_forceFuncOpen=%d). Now installing inline hooks with bridge...", ok, g_forceFuncOpen ? 1 : 0);
 
     // ==================== Inline Code Patching (with Bridge) ====================
     // methodPointer+vtable 对 AOT 编译的直接调用无效 (il2cpp 去虚化)
@@ -1169,7 +1286,7 @@ void register_trace_hooks() {
     //   - bridge 复制原始指令并修复 PC-relative，跳回原函数+16
     //   - hook 回调通过 bridge 调用原始函数，无需临时恢复指令
     //   - inline patch 永远不被移除，多线程安全
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 11; i++) {
         void *targetFn = *entries[i].orig_fn;
         if (!targetFn) {
             LOGH("[INLINE-%s] SKIP: orig_fn is null (method not found)", entries[i].tag);
